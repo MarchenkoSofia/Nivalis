@@ -1,5 +1,5 @@
 APP_NAME = "Nivalis"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 DPI_AWARENESS_CONTEXT = -4
 WIN_SCAN_INTERVAL_MS = 500
@@ -12,10 +12,24 @@ MAX_WINDOW_SNOW = 32.0
 MAX_ICON_SNOW = 16.0
 MAX_GROUND_SNOW = 110.0
 
-TREE_SPAWN_SNOW_THRESHOLD = 40.0
-TREE_MAX_COUNT = 10
-TREE_GROWTH_RATE = 0.00065
-TREE_TURBO_MULT = 35.0
-
 PUDDLE_DIFFUSION_RATE = 0.38
 PUDDLE_DRAIN_EDGE_RATE = 0.18
+
+
+class RuntimeSettings:
+    def __init__(self):
+        self.manual_weather = False
+        self.manual_temperature = -3.5
+        self.temp_offset = 0.0
+        self.cpu_heat_gain = 4.0
+        self.manual_intensity = 0.45
+
+        self.tree_snow_threshold = 38.0
+        self.tree_max_count = 10
+        self.tree_growth_speed = 1.0
+
+        self.santa_require_lit_tree = True
+        self.santa_min_interval = 20.0
+
+
+SETTINGS = RuntimeSettings()

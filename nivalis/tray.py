@@ -2,6 +2,7 @@ from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor
 from PyQt6.QtCore import Qt
 
+
 def generate_tray_icon() -> QIcon:
     px = QPixmap(32, 32)
     px.fill(Qt.GlobalColor.transparent)
@@ -18,18 +19,29 @@ def generate_tray_icon() -> QIcon:
     p.end()
     return QIcon(px)
 
+
 class TrayManager:
     def __init__(self, overlay):
         self.overlay = overlay
         self.tray = QSystemTrayIcon()
         self.tray.setIcon(generate_tray_icon())
         self.tray.setToolTip("Nivalis — Atmosphere Engine")
+        self.tray.activated.connect(self._on_tray_activated)
         self.build_menu()
         self.tray.show()
 
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self.overlay.open_settings()
+
     def build_menu(self):
         m = QMenu()
-        
+
+        a_settings = m.addAction("⚙️ Настройки погоды и событий...")
+        a_settings.triggered.connect(self.overlay.open_settings)
+
+        m.addSeparator()
+
         self.a_pass = m.addAction("👁️ Прозрачный режим")
         self.a_pass.setCheckable(True)
         self.a_pass.setChecked(True)
@@ -46,14 +58,14 @@ class TrayManager:
         m.addSeparator()
 
         a_thaw = m.addAction("💧 Запустить оттепель")
-        a_thaw.triggered.connect(lambda: self.overlay.weather.trigger_thaw(28.0))
+        a_thaw.triggered.connect(
+            lambda: self.overlay.weather.trigger_thaw(28.0))
+
+        a_tree = m.addAction("🌲 Посадить ёлочку")
+        a_tree.triggered.connect(self.overlay.force_spawn_tree)
 
         a_santa = m.addAction("🎅 Вызвать упряжку")
         a_santa.triggered.connect(self.overlay.force_spawn_santa)
-
-        self.a_turbo = m.addAction("⚡ Ускоренный рост елей")
-        self.a_turbo.setCheckable(True)
-        self.a_turbo.triggered.connect(self.toggle_turbo)
 
         m.addSeparator()
         a_quit = m.addAction("❌ Выход")
@@ -66,6 +78,3 @@ class TrayManager:
         self.a_pass.setChecked(tool_id is None)
         self.a_shovel.setChecked(tool_id == "shovel")
         self.a_saw.setChecked(tool_id == "saw")
-
-    def toggle_turbo(self):
-        self.overlay.turbo_growth = self.a_turbo.isChecked()

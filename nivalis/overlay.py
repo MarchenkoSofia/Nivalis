@@ -5,11 +5,11 @@ from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtGui import (
     QPainter, QColor, QPen, QBrush, QLinearGradient,
-    QRadialGradient, QPolygonF, QFont, QCursor
+    QRadialGradient, QPolygonF, QPainterPath, QFont, QCursor
 )
 from .config import (
     PHYSICS_FPS, WIN_SCAN_INTERVAL_MS, WIND_FORCE_SCALE,
-    TREE_SPAWN_SNOW_THRESHOLD, TREE_MAX_COUNT, TREE_TURBO_MULT
+    GRAVITY, SETTINGS
 )
 from .platform_win import (
     fetch_visible_windows, fetch_desktop_icons, set_window_pass_through
@@ -18,6 +18,8 @@ from .weather import WeatherEngine
 from .physics import SnowLedge, FallingSnowParticle, WaterDrop, PuddleMap
 from .entities import PineTree, SantaSleigh
 from .tray import TrayManager
+from .settings import SettingsDialog
+
 
 class NivalisOverlay(QWidget):
     def __init__(self):
@@ -51,14 +53,14 @@ class NivalisOverlay(QWidget):
         self.presents: list[dict] = []
         self.particles: list[dict] = []
         self.santa: SantaSleigh | None = None
+        self.settings_dlg: SettingsDialog | None = None
 
         self.active_tool: str | None = None
-        self.turbo_growth = False
         self.mouse_pressed = False
         self.last_pos = QPointF(0, 0)
         self.mouse_vel = QPointF(0, 0)
         self.last_tick = time.time()
-        self.santa_cd = 15.0
+        self.santa_cd = SETTINGS.santa_min_interval
 
         for _ in range(160):
             self._spawn_ambient_flake(scatter_y=True)
@@ -78,18 +80,30 @@ class NivalisOverlay(QWidget):
         self.loop_timer.timeout.connect(self.physics_loop)
         self.loop_timer.start(int(1000 / PHYSICS_FPS))
 
+    def open_settings(self):
+        if self.settings_dlg is None:
+            self.settings_dlg = SettingsDialog(self)
+        self.settings_dlg.show()
+        self.settings_dlg.raise_()
+        self.settings_dlg.activateWindow()
+
     def set_active_tool(self, tool_id: str | None):
         self.active_tool = tool_id
-        if tool_id is not None:
-            set_window_pass_through(self.hwnd, False)
-        else:
-            set_window_pass_through(self.hwnd, True)
+        set_window_pass_through(self.hwnd, tool_id is None)
 
     def force_spawn_santa(self):
         if self.santa is None:
             self.santa = SantaSleigh(self.sw, self.sh)
 
+    def force_spawn_tree(self):
+        if len(self.trees) < SETTINGS.tree_max_count:
+            rx = random.randint(100, self.sw - 100)
+            self.ground.deposit(rx, 45.0, rad=35)
+            self.trees.append(PineTree(rx, self.sh))
+
     def close_application(self):
+        if self.settings_dlg:
+            self.settings_dlg.close()
         QApplication.quit()
 
     def sync_environment(self):
@@ -162,7 +176,8 @@ class NivalisOverlay(QWidget):
                                  (gy - self.last_pos.y()) / max(0.001, dt))
 
         if self.active_tool is None:
-            over_santa = (self.santa and not self.santa.downed and self.santa.bounding_box().contains(gx, gy))
+            over_santa = (
+                self.santa and not self.santa.downed and self.santa.bounding_box().contains(gx, gy))
             set_window_pass_through(self.hwnd, not over_santa)
 
         if self.santa and not self.santa.downed:
@@ -186,11 +201,14 @@ class NivalisOverlay(QWidget):
         for f in self.ambient_flakes:
             old_y = f["y"]
             f["phase"] += dt * 2.2
-            f["x"] += (w_acc * f["depth"] + math.sin(f["phase"]) * 14.0 + f["vx_off"]) * dt
+            f["x"] += (w_acc * f["depth"] + math.sin(f["phase"])
+                       * 14.0 + f["vx_off"]) * dt
             f["y"] += f["vy"] * dt
 
-            if f["x"] < -40: f["x"] = self.sw + 35
-            elif f["x"] > self.sw + 40: f["x"] = -35
+            if f["x"] < -40:
+                f["x"] = self.sw + 35
+            elif f["x"] > self.sw + 40:
+                f["x"] = -35
 
             stuck = False
             fx, fy = f["x"], f["y"]
@@ -201,7 +219,8 @@ class NivalisOverlay(QWidget):
                         lx = int(fx) - wl.x1
                         sy = wl.y - wl.heights[lx]
                         if old_y <= sy <= fy:
-                            w_rc = self.visible_win_rects[idx] if idx < len(self.visible_win_rects) else None
+                            w_rc = self.visible_win_rects[idx] if idx < len(
+                                self.visible_win_rects) else None
                             if not self._point_occluded(fx, wl.y - 2, exclude_rect=w_rc):
                                 if not self.weather.is_thawing:
                                     wl.deposit(fx, 0.85, rad=7)
@@ -228,8 +247,14 @@ class NivalisOverlay(QWidget):
                     stuck = True
 
             if stuck or fy > self.sh + 15:
-                f["y"] = random.uniform(-25, -5)
-                f["x"] = random.uniform(0, self.sw)
+                if len(self.ambient_flakes) > target_count:
+                    f["kill"] = True
+                else:
+                    f["y"] = random.uniform(-25, -5)
+                    f["x"] = random.uniform(0, self.sw)
+
+        self.ambient_flakes = [
+            f for f in self.ambient_flakes if not f.get("kill")]
 
         for p in self.falling_snow:
             old_y = p.y
@@ -268,8 +293,10 @@ class NivalisOverlay(QWidget):
         self.falling_snow = [p for p in self.falling_snow if p.alive]
 
         self.ground.smooth()
-        for wl in win_ledges: wl.smooth()
-        for il in self.icon_ledges: il.smooth()
+        for wl in win_ledges:
+            wl.smooth()
+        for il in self.icon_ledges:
+            il.smooth()
 
         if self.weather.is_thawing:
             melt = 3.4 * dt
@@ -289,7 +316,8 @@ class NivalisOverlay(QWidget):
 
             for i in range(0, self.ground.width, 4):
                 if self.ground.heights[i] > 0.1:
-                    self.ground.heights[i] = max(0.0, self.ground.heights[i] - melt)
+                    self.ground.heights[i] = max(
+                        0.0, self.ground.heights[i] - melt)
                     self.puddle.add_water(i, melt * 0.7)
 
         for d in self.drops:
@@ -334,25 +362,30 @@ class NivalisOverlay(QWidget):
         self.update()
 
     def _update_flora(self, dt: float):
-        if not self.weather.is_thawing and len(self.trees) < TREE_MAX_COUNT and random.random() < 0.03:
+        if not self.weather.is_thawing and len(self.trees) < SETTINGS.tree_max_count and random.random() < 0.03:
             rx = random.randint(80, self.sw - 80)
-            if self.ground.heights[rx] > TREE_SPAWN_SNOW_THRESHOLD:
+            if self.ground.heights[rx] > SETTINGS.tree_snow_threshold:
                 if all(abs(t.x - rx) > 130 for t in self.trees):
                     self.trees.append(PineTree(rx, self.sh))
 
-        rate = TREE_TURBO_MULT if self.turbo_growth else 1.0
         for t in self.trees:
-            t.step(dt, rate, self.weather.is_thawing)
+            t.step(dt, SETTINGS.tree_growth_speed, self.weather.is_thawing)
         self.trees = [t for t in self.trees if t.alpha > 0.05]
 
     def _update_fauna(self, dt: float):
-        ready = any(t.lights_active and not t.is_falling for t in self.trees)
+        ready = (
+            not SETTINGS.santa_require_lit_tree or
+            any(t.lights_active and not t.is_falling for t in self.trees)
+        )
         if self.santa is None:
             if ready:
                 self.santa_cd -= dt
                 if self.santa_cd <= 0:
                     self.santa = SantaSleigh(self.sw, self.sh)
-                    self.santa_cd = random.uniform(20.0, 40.0)
+                    self.santa_cd = random.uniform(
+                        SETTINGS.santa_min_interval,
+                        SETTINGS.santa_min_interval + 15.0
+                    )
         else:
             impact = self.santa.step(dt, self.sw, self.sh)
             if self.santa.downed and random.random() < 0.35:
@@ -415,7 +448,8 @@ class NivalisOverlay(QWidget):
                 lx = int(gx)
                 for i in range(max(0, lx - 32), min(self.sw, lx + 32)):
                     d = 1.0 - (abs(i - lx) / 32)
-                    self.ground.heights[i] = max(0.0, self.ground.heights[i] - 7.0 * d)
+                    self.ground.heights[i] = max(
+                        0.0, self.ground.heights[i] - 7.0 * d)
                 for _ in range(3):
                     self.particles.append({
                         "x": gx + random.uniform(-15, 15),
@@ -580,17 +614,20 @@ class NivalisOverlay(QWidget):
             tb = -h * (0.15 + fc * 0.68)
             tt = -h * (0.42 + fc * 0.58)
             tw = w * (1.0 - fc * 0.6)
-            branch = QPolygonF([QPointF(0, tt), QPointF(-tw * 0.5, tb), QPointF(tw * 0.5, tb)])
+            branch = QPolygonF(
+                [QPointF(0, tt), QPointF(-tw * 0.5, tb), QPointF(tw * 0.5, tb)])
             p.setBrush(QColor(18, 86 - i * 8, 48))
             p.drawPolygon(branch)
 
         if t.lights_active:
             now = time.time()
-            cols = [QColor("#f43f5e"), QColor("#fbbf24"), QColor("#34d399"), QColor("#38bdf8")]
+            cols = [QColor("#f43f5e"), QColor("#fbbf24"),
+                    QColor("#34d399"), QColor("#38bdf8")]
             for li in range(12):
                 lf = (li + 1) / 13.0
                 ly = -h * (0.2 + lf * 0.7)
-                lx = math.sin(li * 2.2 + t.seed) * (w * (1.0 - lf * 0.7) * 0.35)
+                lx = math.sin(li * 2.2 + t.seed) * \
+                    (w * (1.0 - lf * 0.7) * 0.35)
                 c = cols[(li + int(now * 3)) % len(cols)]
                 p.setBrush(c)
                 p.drawEllipse(QPointF(lx, ly), 3.0, 3.0)
@@ -607,33 +644,168 @@ class NivalisOverlay(QWidget):
         if s.direction == -1:
             p.scale(-1, 1)
 
-        p.setPen(QPen(QColor("#fcd34d"), 2.0))
-        p.setBrush(QColor("#be123c"))
-        p.drawRoundedRect(QRectF(-60, -10, 52, 24), 5, 5)
-        p.drawLine(-66, 17, -2, 17)
+        reins = QPainterPath()
+        reins.moveTo(-14, -15)
+        reins.quadTo(12, -2, 34, -10)
+        reins.moveTo(34, -10)
+        reins.quadTo(58, -2, 82, -11)
+        p.setPen(QPen(QColor(253, 224, 71, 200), 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(reins)
+
+        for idx, rx in enumerate((30.0, 80.0)):
+            is_lead = (idx == 1)
+            cycle = s.phase * 3.2 + idx * 1.4
+            bob = math.sin(cycle) * 3.5
+            swing = math.sin(cycle) * 7.0
+
+            p.save()
+            p.translate(rx, bob)
+
+            p.setPen(QPen(QColor("#5c2d16"), 2.4,
+                     Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(QPointF(-9, 3), QPointF(-13 - swing, 15))
+            p.drawLine(QPointF(-6, 3), QPointF(-5 + swing * 0.6, 15))
+            p.drawLine(QPointF(8, 3), QPointF(12 + swing, 14))
+            p.drawLine(QPointF(5, 3), QPointF(4 - swing * 0.6, 15))
+
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor("#854d27"))
+            p.drawRoundedRect(QRectF(-13, -6, 25, 11), 5, 5)
+
+            neck = QPolygonF([
+                QPointF(6, -4),
+                QPointF(14, -15),
+                QPointF(19, -12),
+                QPointF(12, 2)
+            ])
+            p.drawPolygon(neck)
+
+            p.setBrush(QColor("#f5ebe6"))
+            p.drawEllipse(QPointF(-14, -4), 3.0, 2.0)
+
+            p.setBrush(QColor("#dc2626"))
+            p.drawRoundedRect(QRectF(7, -8, 6, 9), 2, 2)
+            p.setBrush(QColor("#fbbf24"))
+            p.drawEllipse(QPointF(11, -2), 2.0, 2.0)
+
+            p.setBrush(QColor("#854d27"))
+            p.drawEllipse(QPointF(17, -15), 6.5, 4.5)
+            p.drawEllipse(QPointF(12, -18), 2.2, 3.8)
+
+            antlers = QPainterPath()
+            antlers.moveTo(15, -18)
+            antlers.lineTo(12, -27)
+            antlers.lineTo(8, -29)
+            antlers.moveTo(12, -23)
+            antlers.lineTo(16, -26)
+            antlers.moveTo(17, -18)
+            antlers.lineTo(19, -25)
+            p.setPen(QPen(QColor("#d6b38c"), 1.6,
+                     Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawPath(antlers)
+
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor("#1e293b"))
+            p.drawEllipse(QPointF(19, -16), 1.3, 1.3)
+
+            if is_lead:
+                glow = QRadialGradient(QPointF(24, -15), 8.0)
+                glow.setColorAt(0.0, QColor(255, 50, 50, 230))
+                glow.setColorAt(1.0, QColor(255, 50, 50, 0))
+                p.setBrush(QBrush(glow))
+                p.drawEllipse(QPointF(24, -15), 8.0, 8.0)
+                p.setBrush(QColor("#ef4444"))
+                p.drawEllipse(QPointF(24, -15), 2.6, 2.6)
+            else:
+                p.setBrush(QColor("#271206"))
+                p.drawEllipse(QPointF(23.5, -15), 1.8, 1.8)
+
+            p.restore()
 
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor("#d97706"))
-        p.drawEllipse(QPointF(-48, -14), 11, 11)
-        p.setBrush(QColor("#e11d48"))
-        p.drawEllipse(QPointF(-26, -16), 11, 13)
+        p.setBrush(QColor("#b45309"))
+        p.drawEllipse(QPointF(-55, -14), 13, 12)
+        p.setBrush(QColor("#3b82f6"))
+        p.drawRect(QRectF(-52, -26, 9, 8))
+        p.setBrush(QColor("#fde047"))
+        p.drawRect(QRectF(-49, -26, 3, 8))
+
+        p.setBrush(QColor("#dc2626"))
+        coat = QPainterPath()
+        coat.moveTo(-38, -2)
+        coat.quadTo(-35, -22, -22, -22)
+        coat.quadTo(-12, -20, -12, -2)
+        coat.closeSubpath()
+        p.drawPath(coat)
+
+        p.setBrush(QColor("#f8fafc"))
+        p.drawRoundedRect(QRectF(-30, -21, 14, 4), 2, 2)
+
+        p.setBrush(QColor("#fed7aa"))
+        p.drawEllipse(QPointF(-23, -27), 6.0, 6.0)
+        p.setBrush(QColor("#f87171"))
+        p.drawEllipse(QPointF(-19, -26), 2.2, 1.8)
+        p.setBrush(QColor("#0f172a"))
+        p.drawEllipse(QPointF(-20, -28.5), 1.2, 1.2)
+
+        beard = QPainterPath()
+        beard.moveTo(-26, -24)
+        beard.quadTo(-16, -24, -15, -18)
+        beard.quadTo(-14, -11, -21, -11)
+        beard.quadTo(-28, -12, -26, -24)
         p.setBrush(QColor("#ffffff"))
-        p.drawEllipse(QPointF(-21, -21), 6, 7)
-        p.setBrush(QColor("#fecdd3"))
-        p.drawEllipse(QPointF(-23, -25), 4, 4)
+        p.drawPath(beard)
 
-        p.setPen(QPen(QColor(254, 243, 199, 170), 1.2))
-        p.drawLine(-8, -2, 60, -2)
+        hat = QPainterPath()
+        hat.moveTo(-29, -30)
+        hat.quadTo(-25, -40, -37, -35)
+        hat.lineTo(-17, -30)
+        hat.closeSubpath()
+        p.setBrush(QColor("#dc2626"))
+        p.drawPath(hat)
 
-        for rx in (22, 62):
-            lp = math.sin(s.phase * 2.5 + rx) * 4.5
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor("#78350f"))
-            p.drawRoundedRect(QRectF(rx - 12, -7 + lp, 24, 12), 3, 3)
-            p.drawEllipse(QPointF(rx + 12, -12 + lp), 6, 5)
-            if rx == 62:
-                p.setBrush(QColor("#ef4444"))
-                p.drawEllipse(QPointF(rx + 18, -12 + lp), 3.0, 3.0)
+        p.setBrush(QColor("#ffffff"))
+        p.drawRoundedRect(QRectF(-30, -32, 14, 3.5), 1.7, 1.7)
+        p.drawEllipse(QPointF(-38, -35), 3.2, 3.2)
+
+        p.setPen(QPen(QColor("#dc2626"), 4.2,
+                 Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawLine(QPointF(-21, -16), QPointF(-13, -15))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("#15803d"))
+        p.drawEllipse(QPointF(-12, -15), 2.6, 2.6)
+
+        hull = QPainterPath()
+        hull.moveTo(-70, -14)
+        hull.quadTo(-74, 8, -56, 11)
+        hull.lineTo(-12, 11)
+        hull.quadTo(2, 11, 6, -6)
+        hull.quadTo(0, -4, -6, 1)
+        hull.lineTo(-48, 1)
+        hull.quadTo(-58, 1, -62, -14)
+        hull.closeSubpath()
+
+        hull_grad = QLinearGradient(0, -14, 0, 12)
+        hull_grad.setColorAt(0.0, QColor("#e11d48"))
+        hull_grad.setColorAt(1.0, QColor("#881337"))
+        p.setBrush(QBrush(hull_grad))
+        p.setPen(QPen(QColor("#fbbf24"), 1.6))
+        p.drawPath(hull)
+
+        runner = QPainterPath()
+        runner.moveTo(-74, 17)
+        runner.lineTo(4, 17)
+        runner.quadTo(15, 17, 14, 6)
+        runner.quadTo(13, 1, 8, 4)
+        runner.moveTo(-54, 11)
+        runner.lineTo(-54, 17)
+        runner.moveTo(-20, 11)
+        runner.lineTo(-20, 17)
+        p.setPen(QPen(QColor("#fcd34d"), 2.2,
+                 Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(runner)
 
         p.restore()
 
@@ -658,7 +830,7 @@ class NivalisOverlay(QWidget):
         font = QFont("Segoe UI", 9, QFont.Weight.DemiBold)
         p.setFont(font)
 
-        badge_w = 150
+        badge_w = 155
         badge_h = 28
         badge_x = self.sw - badge_w - 14
         badge_y = self.sh - badge_h - 48
