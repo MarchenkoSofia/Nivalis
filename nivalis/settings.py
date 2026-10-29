@@ -1,5 +1,4 @@
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider,
     QCheckBox, QPushButton, QGroupBox, QFormLayout
@@ -84,7 +83,7 @@ class SettingsDialog(QWidget):
 
         self.lbl_temp = QLabel()
         self.sl_temp = QSlider(Qt.Orientation.Horizontal)
-        self.sl_temp.setRange(-150, 100)
+        self.sl_temp.setRange(-180, 80)
         self.sl_temp.setValue(int(SETTINGS.manual_temperature * 10))
         self.sl_temp.valueChanged.connect(self._on_change)
         fl_weather.addRow(self.lbl_temp, self.sl_temp)
@@ -98,8 +97,8 @@ class SettingsDialog(QWidget):
 
         self.lbl_cpu = QLabel()
         self.sl_cpu = QSlider(Qt.Orientation.Horizontal)
-        self.sl_cpu.setRange(0, 100)
-        self.sl_cpu.setValue(int(SETTINGS.cpu_heat_gain * 10))
+        self.sl_cpu.setRange(0, 150)
+        self.sl_cpu.setValue(int(SETTINGS.cpu_chill_gain * 10))
         self.sl_cpu.valueChanged.connect(self._on_change)
         fl_weather.addRow(self.lbl_cpu, self.sl_cpu)
 
@@ -173,7 +172,7 @@ class SettingsDialog(QWidget):
         SETTINGS.manual_weather = self.cb_manual.isChecked()
         SETTINGS.manual_temperature = self.sl_temp.value() / 10.0
         SETTINGS.temp_offset = self.sl_offset.value() / 10.0
-        SETTINGS.cpu_heat_gain = self.sl_cpu.value() / 10.0
+        SETTINGS.cpu_chill_gain = self.sl_cpu.value() / 10.0
         SETTINGS.manual_intensity = self.sl_int.value() / 100.0
 
         SETTINGS.tree_snow_threshold = float(self.sl_thresh.value())
@@ -197,7 +196,8 @@ class SettingsDialog(QWidget):
             f"Ручная темп.: {SETTINGS.manual_temperature:+.1f}°C")
         self.lbl_offset.setText(
             f"Сдвиг авто-темп.: {SETTINGS.temp_offset:+.1f}°C")
-        self.lbl_cpu.setText(f"Нагрев от CPU: +{SETTINGS.cpu_heat_gain:.1f}°C")
+        self.lbl_cpu.setText(
+            f"Охлаждение от CPU: -{SETTINGS.cpu_chill_gain:.1f}°C")
         self.lbl_int.setText(
             f"Сила снегопада: {int(SETTINGS.manual_intensity * 100)}%")
         self.lbl_thresh.setText(

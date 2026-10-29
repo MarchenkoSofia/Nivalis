@@ -1,12 +1,12 @@
 APP_NAME = "Nivalis"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 DPI_AWARENESS_CONTEXT = -4
 WIN_SCAN_INTERVAL_MS = 500
 PHYSICS_FPS = 60
 
 GRAVITY = 750.0
-WIND_FORCE_SCALE = 60.0
+WIND_FORCE_SCALE = 65.0
 
 MAX_WINDOW_SNOW = 32.0
 MAX_ICON_SNOW = 16.0
@@ -19,9 +19,9 @@ PUDDLE_DRAIN_EDGE_RATE = 0.18
 class RuntimeSettings:
     def __init__(self):
         self.manual_weather = False
-        self.manual_temperature = -3.5
+        self.manual_temperature = -4.0
         self.temp_offset = 0.0
-        self.cpu_heat_gain = 4.0
+        self.cpu_chill_gain = 6.0
         self.manual_intensity = 0.45
 
         self.tree_snow_threshold = 38.0

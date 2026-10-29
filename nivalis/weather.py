@@ -5,16 +5,26 @@ import psutil
 from .config import SETTINGS
 
 
+class WeatherType:
+    FROST_CALM = "frost_calm"
+    FLUFFY_SNOW = "fluffy_snow"
+    SNOWSTORM = "snowstorm"
+    BLIZZARD = "blizzard"
+    SLEET = "sleet"
+    THAW = "thaw"
+
+
 class WeatherEngine:
     def __init__(self):
         self.t0 = time.time()
         self.last_check = self.t0
         self.last_net = psutil.net_io_counters()
-        self.intensity = 0.4
+        self.intensity = 0.45
         self.wind = 0.1
-        self.temperature = -4.0
+        self.temperature = -5.0
         self.stochastic_flux = 0.0
         self.forced_thaw_until = 0.0
+        self.current_type = WeatherType.FLUFFY_SNOW
 
     def trigger_thaw(self, duration: float = 30.0):
         self.forced_thaw_until = time.time() + duration
@@ -24,6 +34,7 @@ class WeatherEngine:
         if SETTINGS.manual_weather:
             self.temperature = SETTINGS.manual_temperature
             self.intensity = SETTINGS.manual_intensity
+            self._categorize()
 
     def update(self):
         now = time.time()
@@ -51,35 +62,58 @@ class WeatherEngine:
             self.intensity += (target_int - self.intensity) * 0.35
         else:
             quasi_harmonic = (
-                0.40 * math.sin(elapsed * 0.0031 * math.pi) +
-                0.35 * math.cos(elapsed * 0.0053 * 1.41421356) +
-                0.25 * math.sin(elapsed * 0.0017 * 1.61803398)
+                0.38 * math.sin(elapsed * 0.0031 * math.pi) +
+                0.32 * math.cos(elapsed * 0.0053 * 1.41421356) +
+                0.30 * math.sin(elapsed * 0.0017 * 1.61803398)
             )
 
             if now < self.forced_thaw_until:
                 self.temperature = 3.2
             else:
                 t_wave = (
-                    math.sin(elapsed * 0.0018 * math.pi) * 4.2 +
-                    math.cos(elapsed * 0.0041 * 1.7320508) * 3.1 +
-                    r_temp * 2.0 - 2.6 +
-                    cpu * SETTINGS.cpu_heat_gain +
+                    math.sin(elapsed * 0.0018 * math.pi) * 3.8 +
+                    math.cos(elapsed * 0.0041 * 1.7320508) * 2.8 +
+                    r_temp * 2.0 - 2.0 -
+                    (cpu * SETTINGS.cpu_chill_gain) +
                     SETTINGS.temp_offset
                 )
-                self.temperature = max(-15.0, min(10.0, t_wave))
+                self.temperature = max(-18.0, min(8.0, t_wave))
 
             if self.is_thawing:
                 target_int = max(0.01, 0.08 - self.temperature * 0.015)
             else:
-                base = 0.25 + 0.3 * quasi_harmonic + 0.25 * \
-                    cpu + 0.2 * net_flow + self.stochastic_flux
-                target_int = max(0.05, min(1.0, base))
+                cpu_storm_bonus = cpu * 0.35
+                base = 0.25 + 0.25 * quasi_harmonic + cpu_storm_bonus + \
+                    0.15 * net_flow + self.stochastic_flux
+                target_int = max(0.06, min(1.0, base))
 
             self.intensity += (target_int - self.intensity) * 0.2
 
-        target_wind = math.sin(elapsed * 0.008 * 2.2360679) * \
-            (0.3 + net_flow * 0.8) + r_wind * 0.3
+        wind_amp = 0.4 + (0.8 if self.temperature < -
+                          7.0 else 0.2) + net_flow * 0.7
+        target_wind = math.sin(elapsed * 0.009 * 2.236) * \
+            wind_amp + r_wind * 0.4
         self.wind += (target_wind - self.wind) * 0.15
+
+        self._categorize()
+
+    def _categorize(self):
+        t = self.temperature
+        w = abs(self.wind)
+        i = self.intensity
+
+        if t > 0.3:
+            self.current_type = WeatherType.THAW
+        elif -0.8 <= t <= 0.3:
+            self.current_type = WeatherType.SLEET
+        elif t < -7.0 and w > 0.45 and i > 0.55:
+            self.current_type = WeatherType.BLIZZARD
+        elif t < -8.0 and w <= 0.4:
+            self.current_type = WeatherType.FROST_CALM
+        elif i > 0.65 or w > 0.55:
+            self.current_type = WeatherType.SNOWSTORM
+        else:
+            self.current_type = WeatherType.FLUFFY_SNOW
 
     @property
     def is_thawing(self) -> bool:
@@ -87,9 +121,13 @@ class WeatherEngine:
 
     @property
     def summary(self) -> str:
-        if self.is_thawing:
-            return f"💧 Оттепель +{self.temperature:.1f}°C"
-        pct = int(self.intensity * 100)
-        prefix = "🌨️ Метель" if pct > 75 else (
-            "❄️ Снег" if pct > 35 else "✨ Легкий снег")
-        return f"{prefix} {self.temperature:.1f}°C"
+        t_str = f"{self.temperature:+.1f}°C"
+        labels = {
+            WeatherType.THAW: f"💧 Оттепель {t_str}",
+            WeatherType.SLEET: f"🌧️ Мокрый снег {t_str}",
+            WeatherType.BLIZZARD: f"🌪️ Буран {t_str}",
+            WeatherType.FROST_CALM: f"✨ Мороз и штиль {t_str}",
+            WeatherType.SNOWSTORM: f"🌨️ Метель {t_str}",
+            WeatherType.FLUFFY_SNOW: f"❄️ Снегопад {t_str}",
+        }
+        return labels.get(self.current_type, f"❄️ {t_str}")

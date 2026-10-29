@@ -14,7 +14,7 @@ from .config import (
 from .platform_win import (
     fetch_visible_windows, fetch_desktop_icons, set_window_pass_through
 )
-from .weather import WeatherEngine
+from .weather import WeatherEngine, WeatherType
 from .physics import SnowLedge, FallingSnowParticle, WaterDrop, PuddleMap
 from .entities import PineTree, SantaSleigh
 from .tray import TrayManager
@@ -61,6 +61,24 @@ class NivalisOverlay(QWidget):
         self.mouse_vel = QPointF(0, 0)
         self.last_tick = time.time()
         self.santa_cd = SETTINGS.santa_min_interval
+
+        # Геометрия погодного бейджа и кнопки закрытия в правом нижнем углу
+        self.badge_w = 175
+        self.badge_h = 28
+        self.btn_size = 28
+        self.close_btn_rect = QRectF(
+            self.sw - self.btn_size - 14,
+            self.sh - self.badge_h - 48,
+            self.btn_size,
+            self.badge_h
+        )
+        self.badge_rect = QRectF(
+            self.sw - self.badge_w - self.btn_size - 20,
+            self.sh - self.badge_h - 48,
+            self.badge_w,
+            self.badge_h
+        )
+        self.close_btn_hovered = False
 
         for _ in range(160):
             self._spawn_ambient_flake(scatter_y=True)
@@ -155,11 +173,27 @@ class NivalisOverlay(QWidget):
 
     def _spawn_ambient_flake(self, scatter_y=False):
         d = random.uniform(0.3, 1.0)
+        w_type = self.weather.current_type
+
+        # Адаптация формы и скорости хлопьев под погоду
+        if w_type == WeatherType.FLUFFY_SNOW:
+            r = 1.8 + d * 3.4
+            vy = 28.0 + d * 60.0
+        elif w_type == WeatherType.FROST_CALM:
+            r = 0.9 + d * 1.8
+            vy = 20.0 + d * 45.0
+        elif w_type == WeatherType.BLIZZARD:
+            r = 1.0 + d * 2.6
+            vy = 55.0 + d * 110.0
+        else:
+            r = 1.2 + d * 2.8
+            vy = 35.0 + d * 80.0
+
         self.ambient_flakes.append({
             "x": random.uniform(-30, self.sw + 30),
             "y": random.uniform(-20, self.sh) if scatter_y else random.uniform(-30, -5),
-            "r": 1.2 + d * 2.8,
-            "vy": 35.0 + d * 80.0,
+            "r": r,
+            "vy": vy,
             "vx_off": random.uniform(-15.0, 15.0),
             "phase": random.uniform(0.0, math.tau),
             "depth": d
@@ -175,10 +209,15 @@ class NivalisOverlay(QWidget):
         self.mouse_vel = QPointF((gx - self.last_pos.x()) / max(0.001, dt),
                                  (gy - self.last_pos.y()) / max(0.001, dt))
 
+        # Проверка наведения на кнопку закрытия и бейдж
+        self.close_btn_hovered = self.close_btn_rect.contains(gx, gy)
+        over_ui = self.close_btn_hovered or self.badge_rect.contains(gx, gy)
+
         if self.active_tool is None:
             over_santa = (
-                self.santa and not self.santa.downed and self.santa.bounding_box().contains(gx, gy))
-            set_window_pass_through(self.hwnd, not over_santa)
+                self.santa and not self.santa.downed and self.santa.bounding_box().contains(gx, gy)
+            )
+            set_window_pass_through(self.hwnd, not (over_santa or over_ui))
 
         if self.santa and not self.santa.downed:
             spd = math.hypot(self.mouse_vel.x(), self.mouse_vel.y())
@@ -191,7 +230,7 @@ class NivalisOverlay(QWidget):
         self.last_pos = QPointF(gx, gy)
         self.weather.update()
 
-        target_count = int(35 + self.weather.intensity * 360)
+        target_count = int(35 + self.weather.intensity * 380)
         while len(self.ambient_flakes) < target_count:
             self._spawn_ambient_flake()
 
@@ -494,10 +533,33 @@ class NivalisOverlay(QWidget):
                         t.is_falling = True
                         t.lights_active = False
 
+    def keyPressEvent(self, event):
+        # Клавиша Esc мгновенно сбрасывает лопатку/пилу в безопасный сквозной режим
+        if event.key() == Qt.Key.Key_Escape:
+            self.set_active_tool(None)
+            self.tray.set_tool(None)
+
     def mousePressEvent(self, event):
+        pos = event.position()
+        gx, gy = pos.x(), pos.y()
+
+        # Клик по кнопке закрытия ✕ рядом с погодой
+        if event.button() == Qt.MouseButton.LeftButton and self.close_btn_rect.contains(gx, gy):
+            self.close_application()
+            return
+
+        # Двойной/одинарный клик по самому бейджу погоды открывает настройки
+        if event.button() == Qt.MouseButton.LeftButton and self.badge_rect.contains(gx, gy):
+            self.open_settings()
+            return
+
+        # Правый клик в режиме инструмента мгновенно возвращает сквозной режим
+        if event.button() == Qt.MouseButton.RightButton and self.active_tool is not None:
+            self.set_active_tool(None)
+            self.tray.set_tool(None)
+            return
+
         if event.button() == Qt.MouseButton.LeftButton:
-            pos = event.position()
-            gx, gy = pos.x(), pos.y()
             if self.santa and not self.santa.downed and self.santa.bounding_box().contains(gx, gy):
                 self._strike_santa(random.uniform(-100, 100), -160.0)
                 return
@@ -557,7 +619,7 @@ class NivalisOverlay(QWidget):
             p.drawEllipse(QPointF(pt["x"], pt["y"]), pt["r"], pt["r"])
 
         self._render_tool_indicator(p)
-        self._render_weather_badge(p)
+        self._render_bottom_ui(p)
 
     def _render_ledge(self, p: QPainter, ledge: SnowLedge):
         if max(ledge.heights, default=0) < 0.6:
@@ -825,23 +887,27 @@ class NivalisOverlay(QWidget):
             p.drawEllipse(QPointF(0, 0), 20, 20)
         p.restore()
 
-    def _render_weather_badge(self, p: QPainter):
+    def _render_bottom_ui(self, p: QPainter):
         text = self.weather.summary
         font = QFont("Segoe UI", 9, QFont.Weight.DemiBold)
         p.setFont(font)
 
-        badge_w = 155
-        badge_h = 28
-        badge_x = self.sw - badge_w - 14
-        badge_y = self.sh - badge_h - 48
-
         p.setPen(QPen(QColor(255, 255, 255, 30), 1))
-        p.setBrush(QColor(15, 23, 42, 175))
-        p.drawRoundedRect(QRectF(badge_x, badge_y, badge_w, badge_h), 6, 6)
+        p.setBrush(QColor(15, 23, 42, 180))
+        p.drawRoundedRect(self.badge_rect, 6, 6)
 
         p.setPen(QColor(241, 245, 249))
-        p.drawText(
-            QRectF(badge_x, badge_y, badge_w, badge_h),
-            Qt.AlignmentFlag.AlignCenter,
-            text
-        )
+        p.drawText(self.badge_rect, Qt.AlignmentFlag.AlignCenter, text)
+
+        btn_bg = QColor(239, 68, 68, 210) if self.close_btn_hovered else QColor(
+            30, 41, 59, 185)
+        btn_border = QColor(248, 113, 113) if self.close_btn_hovered else QColor(
+            255, 255, 255, 40)
+
+        p.setPen(QPen(btn_border, 1))
+        p.setBrush(btn_bg)
+        p.drawRoundedRect(self.close_btn_rect, 6, 6)
+
+        p.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        p.setPen(QColor(255, 255, 255))
+        p.drawText(self.close_btn_rect, Qt.AlignmentFlag.AlignCenter, "✕")
