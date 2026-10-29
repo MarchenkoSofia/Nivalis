@@ -57,6 +57,9 @@ class TrayManager:
 
         m.addSeparator()
 
+        a_sos = m.addAction("🐧 Вызвать пингвинов (SOS)")
+        a_sos.triggered.connect(self.overlay.trigger_penguin_sos)
+
         a_thaw = m.addAction("💧 Запустить оттепель")
         a_thaw.triggered.connect(
             lambda: self.overlay.weather.trigger_thaw(28.0))

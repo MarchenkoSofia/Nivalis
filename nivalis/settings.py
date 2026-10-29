@@ -16,7 +16,7 @@ class SettingsDialog(QWidget):
             Qt.WindowType.WindowStaysOnTopHint |
             Qt.WindowType.WindowCloseButtonHint
         )
-        self.setFixedSize(430, 560)
+        self.setFixedSize(440, 640)
         self._apply_theme()
         self._build_ui()
 
@@ -46,11 +46,17 @@ class SettingsDialog(QWidget):
                 color: #ffffff;
                 border: none;
                 border-radius: 6px;
-                padding: 7px 12px;
+                padding: 7px 10px;
                 font-weight: 600;
             }
             QPushButton:hover {
                 background-color: #0369a1;
+            }
+            QPushButton#sosButton {
+                background-color: #ea580c;
+            }
+            QPushButton#sosButton:hover {
+                background-color: #c2410c;
             }
             QSlider::groove:horizontal {
                 height: 6px;
@@ -71,7 +77,7 @@ class SettingsDialog(QWidget):
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 16)
-        root.setSpacing(10)
+        root.setSpacing(8)
 
         grp_weather = QGroupBox("Погода и температура")
         fl_weather = QFormLayout(grp_weather)
@@ -137,10 +143,23 @@ class SettingsDialog(QWidget):
 
         root.addWidget(grp_trees)
 
-        grp_santa = QGroupBox("Дед Мороз и события")
+        grp_santa = QGroupBox("Пингвины SOS и Дед Мороз")
         fl_santa = QFormLayout(grp_santa)
 
-        self.cb_req_tree = QCheckBox("Ждать, пока вырастет ёлка с огнями")
+        self.cb_auto_sos = QCheckBox(
+            "Авто-вызов пингвинов при высоких сугробах")
+        self.cb_auto_sos.setChecked(SETTINGS.auto_penguin_sos)
+        self.cb_auto_sos.toggled.connect(self._on_change)
+        fl_santa.addRow(self.cb_auto_sos)
+
+        self.lbl_sos_lvl = QLabel()
+        self.sl_sos_lvl = QSlider(Qt.Orientation.Horizontal)
+        self.sl_sos_lvl.setRange(15, 55)
+        self.sl_sos_lvl.setValue(int(SETTINGS.penguin_trigger_ratio * 100))
+        self.sl_sos_lvl.valueChanged.connect(self._on_change)
+        fl_santa.addRow(self.lbl_sos_lvl, self.sl_sos_lvl)
+
+        self.cb_req_tree = QCheckBox("Сани ждут ёлку с гирляндой")
         self.cb_req_tree.setChecked(SETTINGS.santa_require_lit_tree)
         self.cb_req_tree.toggled.connect(self._on_change)
         fl_santa.addRow(self.cb_req_tree)
@@ -153,16 +172,16 @@ class SettingsDialog(QWidget):
         fl_santa.addRow(self.lbl_scd, self.sl_scd)
 
         btn_row = QHBoxLayout()
-        btn_tree = QPushButton("🌲 Посадить ёлку")
+        btn_tree = QPushButton("🌲 Ёлка")
         btn_tree.clicked.connect(self.overlay.force_spawn_tree)
-        btn_santa = QPushButton("🎅 Вызвать сани")
+        btn_santa = QPushButton("🎅 Сани")
         btn_santa.clicked.connect(self.overlay.force_spawn_santa)
-        btn_thaw = QPushButton("💧 Оттепель")
-        btn_thaw.clicked.connect(
-            lambda: self.overlay.weather.trigger_thaw(25.0))
+        btn_sos = QPushButton("🐧 SOS Пингвины")
+        btn_sos.setObjectName("sosButton")
+        btn_sos.clicked.connect(self.overlay.trigger_penguin_sos)
         btn_row.addWidget(btn_tree)
         btn_row.addWidget(btn_santa)
-        btn_row.addWidget(btn_thaw)
+        btn_row.addWidget(btn_sos)
         fl_santa.addRow(btn_row)
 
         root.addWidget(grp_santa)
@@ -179,6 +198,8 @@ class SettingsDialog(QWidget):
         SETTINGS.tree_max_count = self.sl_tcount.value()
         SETTINGS.tree_growth_speed = float(self.sl_tspeed.value())
 
+        SETTINGS.auto_penguin_sos = self.cb_auto_sos.isChecked()
+        SETTINGS.penguin_trigger_ratio = self.sl_sos_lvl.value() / 100.0
         SETTINGS.santa_require_lit_tree = self.cb_req_tree.isChecked()
         SETTINGS.santa_min_interval = float(self.sl_scd.value())
 
@@ -205,5 +226,7 @@ class SettingsDialog(QWidget):
         self.lbl_tcount.setText(f"Макс. ёлок: {SETTINGS.tree_max_count}")
         self.lbl_tspeed.setText(
             f"Скорость роста: x{int(SETTINGS.tree_growth_speed)}")
+        self.lbl_sos_lvl.setText(
+            f"Высота для SOS: {int(SETTINGS.penguin_trigger_ratio * 100)}% экрана")
         self.lbl_scd.setText(
             f"Интервал саней: {int(SETTINGS.santa_min_interval)} с")
