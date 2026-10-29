@@ -19,6 +19,9 @@ from .physics import SnowLedge, FallingSnowParticle, WaterDrop, PuddleMap
 from .entities import (
     PineTree, SantaSleigh, FleeingReindeer, WolfAgent, PenguinAgent
 )
+from .entities import (
+    PineTree, SantaSleigh, FleeingReindeer, WolfAgent, PenguinAgent, Boomerang
+)
 from .tray import TrayManager
 from .settings import SettingsDialog
 
