@@ -22,7 +22,7 @@ class WeatherEngine:
         self.last_net = psutil.net_io_counters()
         self.intensity = 0.45
         self.wind = 0.1
-        self.temperature = -5.0
+        self.temperature = -7.5  # Стартовая температура стабильно ниже нуля
         self.stochastic_flux = 0.0
         self.random_squall = 0.35
         self.next_squall_time = self.t0 + 6.0
@@ -74,24 +74,22 @@ class WeatherEngine:
             if now < self.forced_thaw_until:
                 self.temperature = 3.2
             else:
+                # Базовое смещение -7.5°C гарантирует морозную погоду по умолчанию
                 t_wave = (
-                    math.sin(elapsed * 0.0022 * math.pi) * 4.0 +
-                    math.cos(elapsed * 0.0047 * 1.7320508) * 3.0 +
-                    r_temp * 2.8 - 2.0 -
+                    math.sin(elapsed * 0.0022 * math.pi) * 3.5 +
+                    math.cos(elapsed * 0.0047 * 1.7320508) * 2.5 +
+                    r_temp * 2.0 - 7.5 -
                     (cpu * SETTINGS.cpu_chill_gain) +
                     SETTINGS.temp_offset
                 )
-                self.temperature = max(-18.0, min(8.0, t_wave))
+                self.temperature = max(-22.0, min(6.0, t_wave))
 
             if self.is_thawing:
                 target_int = max(0.01, 0.07 - self.temperature * 0.015)
             else:
-                # 1. Зависимость от температуры: чем крепче мороз, тем выше базовая плотность снега
                 frost_factor = min(1.0, abs(self.temperature) / 14.0)
-                # 2. Случайная составляющая: внезапные снежные заряды + секундный аппаратный рандом
                 random_factor = self.random_squall * 0.65 + \
                     r_snow * 0.35 + self.stochastic_flux * 0.3
-
                 combined = 0.48 * frost_factor + 0.42 * random_factor + 0.10 * cpu
                 target_int = max(0.05, min(1.0, combined))
 

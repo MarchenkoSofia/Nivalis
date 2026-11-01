@@ -16,7 +16,7 @@ class SettingsDialog(QWidget):
             Qt.WindowType.WindowStaysOnTopHint |
             Qt.WindowType.WindowCloseButtonHint
         )
-        self.setFixedSize(440, 640)
+        self.setFixedSize(445, 700)
         self._apply_theme()
         self._build_ui()
 
@@ -76,8 +76,8 @@ class SettingsDialog(QWidget):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 16)
-        root.setSpacing(8)
+        root.setContentsMargins(16, 12, 16, 14)
+        root.setSpacing(6)
 
         grp_weather = QGroupBox("Погода и температура")
         fl_weather = QFormLayout(grp_weather)
@@ -117,7 +117,7 @@ class SettingsDialog(QWidget):
 
         root.addWidget(grp_weather)
 
-        grp_trees = QGroupBox("Рост ёлочек")
+        grp_trees = QGroupBox("Ёлочки, зайчики и волки")
         fl_trees = QFormLayout(grp_trees)
 
         self.lbl_thresh = QLabel()
@@ -141,20 +141,33 @@ class SettingsDialog(QWidget):
         self.sl_tspeed.valueChanged.connect(self._on_change)
         fl_trees.addRow(self.lbl_tspeed, self.sl_tspeed)
 
+        self.lbl_bunnies = QLabel()
+        self.sl_bunnies = QSlider(Qt.Orientation.Horizontal)
+        self.sl_bunnies.setRange(0, 15)
+        self.sl_bunnies.setValue(SETTINGS.bunny_max_count)
+        self.sl_bunnies.valueChanged.connect(self._on_change)
+        fl_trees.addRow(self.lbl_bunnies, self.sl_bunnies)
+
+        self.lbl_wolves = QLabel()
+        self.sl_wolves = QSlider(Qt.Orientation.Horizontal)
+        self.sl_wolves.setRange(0, 10)
+        self.sl_wolves.setValue(SETTINGS.wolf_max_count)
+        self.sl_wolves.valueChanged.connect(self._on_change)
+        fl_trees.addRow(self.lbl_wolves, self.sl_wolves)
+
         root.addWidget(grp_trees)
 
-        grp_santa = QGroupBox("Пингвины SOS и Дед Мороз")
+        grp_santa = QGroupBox("Граница пингвинов SOS и события")
         fl_santa = QFormLayout(grp_santa)
 
-        self.cb_auto_sos = QCheckBox(
-            "Авто-вызов пингвинов при высоких сугробах")
+        self.cb_auto_sos = QCheckBox("Пингвины контролируют границу снега")
         self.cb_auto_sos.setChecked(SETTINGS.auto_penguin_sos)
         self.cb_auto_sos.toggled.connect(self._on_change)
         fl_santa.addRow(self.cb_auto_sos)
 
         self.lbl_sos_lvl = QLabel()
         self.sl_sos_lvl = QSlider(Qt.Orientation.Horizontal)
-        self.sl_sos_lvl.setRange(15, 55)
+        self.sl_sos_lvl.setRange(20, 90)
         self.sl_sos_lvl.setValue(int(SETTINGS.penguin_trigger_ratio * 100))
         self.sl_sos_lvl.valueChanged.connect(self._on_change)
         fl_santa.addRow(self.lbl_sos_lvl, self.sl_sos_lvl)
@@ -197,6 +210,8 @@ class SettingsDialog(QWidget):
         SETTINGS.tree_snow_threshold = float(self.sl_thresh.value())
         SETTINGS.tree_max_count = self.sl_tcount.value()
         SETTINGS.tree_growth_speed = float(self.sl_tspeed.value())
+        SETTINGS.bunny_max_count = self.sl_bunnies.value()
+        SETTINGS.wolf_max_count = self.sl_wolves.value()
 
         SETTINGS.auto_penguin_sos = self.cb_auto_sos.isChecked()
         SETTINGS.penguin_trigger_ratio = self.sl_sos_lvl.value() / 100.0
@@ -226,7 +241,16 @@ class SettingsDialog(QWidget):
         self.lbl_tcount.setText(f"Макс. ёлок: {SETTINGS.tree_max_count}")
         self.lbl_tspeed.setText(
             f"Скорость роста: x{int(SETTINGS.tree_growth_speed)}")
+
+        b_cnt = SETTINGS.bunny_max_count
+        self.lbl_bunnies.setText(
+            "Зайчики: Отключены" if b_cnt == 0 else f"Макс. зайчиков: {b_cnt}")
+
+        w_cnt = SETTINGS.wolf_max_count
+        self.lbl_wolves.setText(
+            "Волки: Отключены" if w_cnt == 0 else f"Макс. волков: {w_cnt}")
+
         self.lbl_sos_lvl.setText(
-            f"Высота для SOS: {int(SETTINGS.penguin_trigger_ratio * 100)}% экрана")
+            f"Граница вызова пингвинов: {int(SETTINGS.penguin_trigger_ratio * 100)}% экрана")
         self.lbl_scd.setText(
             f"Интервал саней: {int(SETTINGS.santa_min_interval)} с")

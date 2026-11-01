@@ -8,8 +8,8 @@ from PyQt6.QtGui import (
     QRadialGradient, QPolygonF, QPainterPath, QFont, QCursor
 )
 from .config import (
-    PHYSICS_FPS, WIN_SCAN_INTERVAL_MS, WIND_FORCE_SCALE,
-    GRAVITY, SETTINGS
+    PHYSICS_FPS, WIN_SCAN_INTERVAL_MS, ICON_SCAN_TICKS,
+    WIND_FORCE_SCALE, GRAVITY, SETTINGS
 )
 from .platform_win import (
     fetch_visible_windows, fetch_desktop_icons, set_window_pass_through
@@ -17,10 +17,8 @@ from .platform_win import (
 from .weather import WeatherEngine, WeatherType
 from .physics import SnowLedge, FallingSnowParticle, WaterDrop, PuddleMap
 from .entities import (
-    PineTree, SantaSleigh, FleeingReindeer, WolfAgent, PenguinAgent
-)
-from .entities import (
-    PineTree, SantaSleigh, FleeingReindeer, WolfAgent, PenguinAgent, Boomerang
+    PineTree, SantaSleigh, FleeingReindeer, WolfAgent,
+    PenguinAgent, Boomerang, FireworkRocket, BunnyAgent, SnowBurrowTown, BurrowChamber
 )
 from .tray import TrayManager
 from .settings import SettingsDialog
@@ -29,9 +27,18 @@ from .settings import SettingsDialog
 class NivalisOverlay(QWidget):
     def __init__(self):
         super().__init__()
-        geom = QApplication.primaryScreen().geometry()
+        screen = QApplication.primaryScreen()
+        geom = screen.geometry()
+        avail = screen.availableGeometry()
+
         self.sw = geom.width()
         self.sh = geom.height()
+
+        avail_bottom = avail.y() + avail.height()
+        if avail_bottom >= self.sh - 4:
+            self.ground_y = self.sh - 48
+        else:
+            self.ground_y = avail_bottom
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
@@ -44,18 +51,22 @@ class NivalisOverlay(QWidget):
         self.setMouseTracking(True)
 
         self.weather = WeatherEngine()
-        self.ground = SnowLedge(0, self.sh - 2, self.sw, kind="ground")
-        self.ground.max_capacity = self.sh * 0.56
-        self.puddle = PuddleMap(self.sw, self.sh - 2)
+        self.ground = SnowLedge(0, self.ground_y, self.sw, kind="ground")
+        self.ground.max_capacity = float(self.ground_y)
+        self.puddle = PuddleMap(self.sw, self.ground_y)
 
         self.window_ledges: dict[int, SnowLedge] = {}
         self.icon_ledges: list[SnowLedge] = []
         self.visible_win_rects: list[tuple[int, int, int, int]] = []
+        self.scan_tick_counter = 0
 
         self.ambient_flakes: list[dict] = []
         self.falling_snow: list[FallingSnowParticle] = []
         self.drops: list[WaterDrop] = []
         self.trees: list[PineTree] = []
+        self.towns: list[SnowBurrowTown] = []
+        self.bunnies: list[BunnyAgent] = []
+        self.fireworks: list[FireworkRocket] = []
         self.presents: list[dict] = []
         self.particles: list[dict] = []
         self.penguins: list[PenguinAgent] = []
@@ -75,22 +86,23 @@ class NivalisOverlay(QWidget):
         self.badge_h = 28
         self.sos_w = 48
         self.btn_size = 28
+        ui_y = self.ground_y - self.badge_h - 8
 
         self.close_btn_rect = QRectF(
             self.sw - self.btn_size - 14,
-            self.sh - self.badge_h - 48,
+            ui_y,
             self.btn_size,
             self.badge_h
         )
         self.sos_btn_rect = QRectF(
             self.close_btn_rect.x() - self.sos_w - 6,
-            self.sh - self.badge_h - 48,
+            ui_y,
             self.sos_w,
             self.badge_h
         )
         self.badge_rect = QRectF(
             self.sos_btn_rect.x() - self.badge_w - 6,
-            self.sh - self.badge_h - 48,
+            ui_y,
             self.badge_w,
             self.badge_h
         )
@@ -109,7 +121,7 @@ class NivalisOverlay(QWidget):
         self.scan_timer = QTimer(self)
         self.scan_timer.timeout.connect(self.sync_environment)
         self.scan_timer.start(WIN_SCAN_INTERVAL_MS)
-        self.sync_environment()
+        self.sync_environment(force_icons=True)
 
         self.loop_timer = QTimer(self)
         self.loop_timer.timeout.connect(self.physics_loop)
@@ -128,19 +140,19 @@ class NivalisOverlay(QWidget):
 
     def force_spawn_santa(self):
         if self.santa is None:
-            self.santa = SantaSleigh(self.sw, self.sh)
+            self.santa = SantaSleigh(self.sw, self.ground_y)
 
     def force_spawn_tree(self):
         if len(self.trees) < SETTINGS.tree_max_count:
             rx = random.randint(80, self.sw - 80)
-            self.ground.deposit(rx, 45.0, rad=35)
+            self.ground.deposit(rx, 45.0, rad=55)
             surf_y = self.ground.y - self.ground.heights[rx]
             self.trees.append(PineTree(rx, surf_y))
 
     def trigger_penguin_sos(self):
         if self.penguins:
             return
-        slots = [0.16, 0.38, 0.62, 0.84]
+        slots = [0.15, 0.38, 0.62, 0.85]
         for idx, frac in enumerate(slots):
             tx = self.sw * frac
             sx = -50.0 if idx < 2 else self.sw + 50.0
@@ -153,24 +165,59 @@ class NivalisOverlay(QWidget):
             self.settings_dlg.close()
         QApplication.quit()
 
-    def sync_environment(self):
-        if not self.icon_ledges:
-            for x1, y1, x2, _ in fetch_desktop_icons(self.sw, self.sh):
-                self.icon_ledges.append(SnowLedge(x1, y1, x2, kind="icon"))
+    def sync_environment(self, force_icons: bool = False):
+        self.scan_tick_counter += 1
+
+        if force_icons or self.scan_tick_counter >= ICON_SCAN_TICKS:
+            self.scan_tick_counter = 0
+            new_rects = fetch_desktop_icons(self.sw, self.ground_y)
+            matched_old = set()
+            updated_icons: list[SnowLedge] = []
+
+            for x1, y1, x2, _ in new_rects:
+                found_ledge = None
+                for idx, old_il in enumerate(self.icon_ledges):
+                    if idx in matched_old:
+                        continue
+                    if abs(old_il.x1 - x1) <= 4 and abs(old_il.y - y1) <= 4 and abs(old_il.x2 - x2) <= 4:
+                        found_ledge = old_il
+                        matched_old.add(idx)
+                        break
+
+                if found_ledge is not None:
+                    updated_icons.append(found_ledge)
+                else:
+                    updated_icons.append(SnowLedge(x1, y1, x2, kind="icon"))
+
+            for idx, old_il in enumerate(self.icon_ledges):
+                if idx not in matched_old:
+                    self._avalanche(old_il)
+
+            self.icon_ledges = updated_icons
 
         wins = fetch_visible_windows(self.hwnd, self.sw, self.sh)
         self.visible_win_rects = [r for _, r in wins]
         active_ids = set()
 
         for h, (l, t, r, b) in wins:
-            if t < 10 or t > self.sh - 40:
+            if t < 8 or t > self.ground_y - 20:
                 continue
             active_ids.add(h)
             if h in self.window_ledges:
                 lg = self.window_ledges[h]
-                if abs(lg.x1 - l) > 10 or abs(lg.y - t) > 10 or abs(lg.x2 - r) > 10:
-                    self._avalanche(lg)
+                dx = l - lg.x1
+                dy = t - lg.y
+                dw = (r - l) - lg.width
+
+                if abs(dw) > 6 or math.hypot(dx, dy) > 85 or dy > 22:
+                    self._avalanche(lg, inherit_vx=dx * 6.0,
+                                    inherit_vy=max(10.0, dy * 5.0))
                     self.window_ledges[h] = SnowLedge(l, t, r, kind="window")
+                elif dx != 0 or dy != 0:
+                    spilled = lg.apply_window_motion(dx, dy)
+                    for sx, sy, mass, svx, svy in spilled:
+                        self.falling_snow.append(
+                            FallingSnowParticle(sx, sy, mass, svx, svy))
             else:
                 self.window_ledges[h] = SnowLedge(l, t, r, kind="window")
 
@@ -178,19 +225,29 @@ class NivalisOverlay(QWidget):
             if dead_h not in active_ids:
                 self._avalanche(self.window_ledges.pop(dead_h))
 
-    def _avalanche(self, ledge: SnowLedge):
-        for i in range(0, ledge.width, 6):
+        for il in self.icon_ledges:
+            if max(il.heights, default=0.0) > 0.5:
+                mid_x = (il.x1 + il.x2) * 0.5
+                if self._point_occluded(mid_x, il.y):
+                    self._avalanche(il)
+
+    def _avalanche(self, ledge: SnowLedge, inherit_vx: float = 0.0, inherit_vy: float = 25.0):
+        step = 3 if ledge.kind == "icon" else 5
+        for i in range(0, ledge.width, step):
             h = ledge.heights[i]
-            if h > 1.0:
+            if h > 0.6:
                 self.falling_snow.append(
                     FallingSnowParticle(
                         x=float(ledge.x1 + i),
-                        y=float(ledge.y),
-                        mass=h,
-                        vx=random.uniform(-15.0, 15.0),
-                        vy=random.uniform(10.0, 50.0)
+                        y=float(ledge.y - h * 0.3),
+                        mass=h * 0.9,
+                        vx=inherit_vx + random.uniform(-22.0, 22.0),
+                        vy=inherit_vy + random.uniform(5.0, 45.0)
                     )
                 )
+        ledge.heights = [0.0] * ledge.width
+        ledge.left_spill = 0.0
+        ledge.right_spill = 0.0
 
     def _point_occluded(self, x: float, y: float, exclude_rect=None) -> bool:
         for rc in self.visible_win_rects:
@@ -219,7 +276,7 @@ class NivalisOverlay(QWidget):
 
         self.ambient_flakes.append({
             "x": random.uniform(-30, self.sw + 30),
-            "y": random.uniform(-20, self.sh) if scatter_y else random.uniform(-30, -5),
+            "y": random.uniform(-20, self.ground_y) if scatter_y else random.uniform(-30, -5),
             "r": r,
             "vy": vy,
             "vx_off": random.uniform(-15.0, 15.0),
@@ -294,7 +351,7 @@ class NivalisOverlay(QWidget):
                                 self.visible_win_rects) else None
                             if not self._point_occluded(fx, wl.y - 2, exclude_rect=w_rc):
                                 if not self.weather.is_thawing and not penguins_heating:
-                                    wl.deposit(fx, 0.85, rad=7)
+                                    wl.deposit(fx, 0.9, rad=7)
                                 stuck = True
                                 break
 
@@ -306,7 +363,7 @@ class NivalisOverlay(QWidget):
                         if old_y <= sy <= fy:
                             if not self._point_occluded(fx, il.y):
                                 if not self.weather.is_thawing and not penguins_heating:
-                                    il.deposit(fx, 0.75, rad=6)
+                                    il.deposit(fx, 0.85, rad=6)
                                 stuck = True
                             break
 
@@ -314,10 +371,10 @@ class NivalisOverlay(QWidget):
                 gy_surf = self.ground.y - self.ground.heights[int(fx)]
                 if fy >= gy_surf:
                     if not self.weather.is_thawing and not penguins_heating:
-                        self.ground.deposit(fx, 1.1, rad=12)
+                        self.ground.deposit(fx, 1.15, rad=24)
                     stuck = True
 
-            if stuck or fy > self.sh + 15:
+            if stuck or fy > self.ground_y + 10:
                 if len(self.ambient_flakes) > target_count:
                     f["kill"] = True
                 else:
@@ -327,31 +384,41 @@ class NivalisOverlay(QWidget):
         self.ambient_flakes = [
             f for f in self.ambient_flakes if not f.get("kill")]
 
+        self.ground.relax_and_roll()
+        for wl in win_ledges:
+            for sx, sy, mass, svx, svy in wl.relax_and_roll():
+                self.falling_snow.append(
+                    FallingSnowParticle(sx, sy, mass, svx, svy))
+        for il in self.icon_ledges:
+            for sx, sy, mass, svx, svy in il.relax_and_roll():
+                self.falling_snow.append(
+                    FallingSnowParticle(sx, sy, mass, svx, svy))
+
         for p in self.falling_snow:
             old_y = p.y
             p.update(dt, w_acc)
-            if p.y >= self.sh + 10 or p.x < -20 or p.x > self.sw + 20:
+            if p.y >= self.ground_y + 8 or p.x < -20 or p.x > self.sw + 20:
                 p.alive = False
                 continue
 
             for wl in win_ledges:
-                if wl.x1 <= p.x <= wl.x2:
+                if wl.x1 <= p.x <= wl.x2 and old_y < wl.y - 2:
                     lx = int(p.x) - wl.x1
                     sy = wl.y - wl.heights[lx]
                     if old_y <= sy <= p.y:
                         if not penguins_heating:
-                            wl.deposit(p.x, p.mass, rad=7)
+                            wl.deposit(p.x, p.mass, rad=6)
                         p.alive = False
                         break
             if not p.alive:
                 continue
 
             for il in self.icon_ledges:
-                if il.x1 <= p.x <= il.x2:
+                if il.x1 <= p.x <= il.x2 and old_y < il.y - 2:
                     lx = int(p.x) - il.x1
                     sy = il.y - il.heights[lx]
                     if old_y <= sy <= p.y:
-                        if not penguins_heating:
+                        if not penguins_heating and not self._point_occluded(p.x, il.y):
                             il.deposit(p.x, p.mass, rad=5)
                         p.alive = False
                         break
@@ -361,20 +428,15 @@ class NivalisOverlay(QWidget):
             if 0 <= int(p.x) < self.sw:
                 if p.y >= self.ground.y - self.ground.heights[int(p.x)]:
                     if not penguins_heating:
-                        self.ground.deposit(p.x, p.mass, rad=10)
+                        self.ground.deposit(p.x, p.mass, rad=22)
                     p.alive = False
 
         self.falling_snow = [p for p in self.falling_snow if p.alive]
 
-        self.ground.smooth()
-        for wl in win_ledges:
-            wl.smooth()
-        for il in self.icon_ledges:
-            il.smooth()
-
         if SETTINGS.auto_penguin_sos and not self.penguins:
-            max_snow_h = max(self.ground.heights, default=0.0)
-            if max_snow_h >= self.sh * SETTINGS.penguin_trigger_ratio:
+            trigger_h = self.ground_y * SETTINGS.penguin_trigger_ratio
+            avg_h = sum(self.ground.heights) / max(1, self.ground.width)
+            if avg_h >= trigger_h:
                 self.trigger_penguin_sos()
 
         if self.weather.is_thawing:
@@ -401,7 +463,7 @@ class NivalisOverlay(QWidget):
 
         for d in self.drops:
             d.update(dt)
-            if d.y >= self.sh - 4:
+            if d.y >= self.ground_y - 2:
                 d.alive = False
                 self.puddle.add_water(d.x, d.mass * 1.5)
             else:
@@ -416,6 +478,7 @@ class NivalisOverlay(QWidget):
 
         self._update_flora(dt)
         self._update_wolves(dt)
+        self._update_bunnies(dt)
         self._update_penguins(dt, win_ledges)
         self._update_fauna(dt)
 
@@ -461,10 +524,18 @@ class NivalisOverlay(QWidget):
     def _update_wolves(self, dt: float):
         lit_trees = [
             t for t in self.trees if t.lights_active and not t.is_falling]
-        should_stay = (len(lit_trees) >
-                       SETTINGS.wolf_min_lit_trees) and not self.penguins
+        should_stay = (
+            SETTINGS.wolf_max_count > 0 and
+            len(lit_trees) > SETTINGS.wolf_min_lit_trees and
+            not self.penguins
+        )
 
-        if should_stay and len(self.wolves) < 3 and random.random() < 0.05:
+        active_wolves = [w for w in self.wolves if w.state != "exit"]
+        if len(active_wolves) > SETTINGS.wolf_max_count:
+            for w in active_wolves[SETTINGS.wolf_max_count:]:
+                w.state = "exit"
+
+        if should_stay and len(self.wolves) < SETTINGS.wolf_max_count and random.random() < 0.05:
             sx = -60.0 if random.random() < 0.5 else self.sw + 60.0
             clamp_x = max(0, min(self.sw - 1, int(sx)))
             sy = self.ground.y - self.ground.heights[clamp_x]
@@ -488,7 +559,89 @@ class NivalisOverlay(QWidget):
 
         self.wolves = [w for w in self.wolves if w.active]
 
+    def _update_bunnies(self, dt: float):
+        avg_snow = sum(self.ground.heights) / max(1, self.ground.width)
+        enough_snow = (
+            SETTINGS.bunny_max_count > 0 and
+            avg_snow >= SETTINGS.bunny_snow_threshold and
+            not self.penguins
+        )
+
+        for town in self.towns:
+            town.sync_with_snow(self.ground_y, self.ground.heights, self.sw)
+            if avg_snow < 18.0:
+                town.alive = False
+        self.towns = [t for t in self.towns if t.alive]
+
+        active_bunnies = [bn for bn in self.bunnies if bn.state != "exit"]
+        if len(active_bunnies) > SETTINGS.bunny_max_count:
+            for bn in active_bunnies[SETTINGS.bunny_max_count:]:
+                bn._leave_chamber()
+                bn.state = "exit"
+
+        if enough_snow and len(self.bunnies) < SETTINGS.bunny_max_count and random.random() < 0.035:
+            sx = -35.0 if random.random() < 0.5 else self.sw + 35.0
+            cx = max(0, min(self.sw - 1, int(sx)))
+            sy = self.ground.y - self.ground.heights[cx]
+            self.bunnies.append(BunnyAgent(sx, sy, self.sw))
+
+        for bn in self.bunnies:
+            cx = max(0, min(self.sw - 1, int(bn.x)))
+            snow_h = self.ground.heights[cx]
+            if not bn.is_underground:
+                bn.y = self.ground.y - snow_h
+
+            is_digging, new_town = bn.step(
+                dt, self.wolves, self.towns, snow_h, enough_snow,
+                self.bunnies, self.sw, self.ground_y, self.ground.heights
+            )
+            if is_digging and random.random() < 0.65:
+                self.particles.append({
+                    "x": bn.x - bn.facing * random.uniform(4, 10),
+                    "y": bn.y - random.uniform(0, 4),
+                    "vx": -bn.facing * random.uniform(40, 95),
+                    "vy": random.uniform(-95, -35),
+                    "r": random.uniform(2.0, 3.8),
+                    "col": QColor(245, 250, 255, 220),
+                    "life": 0.4
+                })
+            if new_town is not None:
+                self.towns.append(new_town)
+
+        self.bunnies = [bn for bn in self.bunnies if bn.active]
+
     def _update_penguins(self, dt: float, win_ledges: list[SnowLedge]):
+        # Ракеты фейерверков, уничтожающие норы
+        for fw in self.fireworks:
+            exploded, ex, ey, col = fw.step(dt)
+            if random.random() < 0.7:
+                self.particles.append({
+                    "x": ex,
+                    "y": ey,
+                    "vx": random.uniform(-25, 25),
+                    "vy": random.uniform(10, 50),
+                    "grav": 50.0,
+                    "r": random.uniform(2.0, 3.2),
+                    "col": QColor(253, 224, 71, 210),
+                    "life": 0.3
+                })
+            if exploded:
+                for i in range(32):
+                    ang = (i / 32.0) * math.tau + random.uniform(-0.1, 0.1)
+                    spd = random.uniform(70.0, 210.0)
+                    self.particles.append({
+                        "x": ex,
+                        "y": ey,
+                        "vx": math.cos(ang) * spd,
+                        "vy": math.sin(ang) * spd,
+                        "grav": 180.0,
+                        "r": random.uniform(2.8, 5.2),
+                        "col": col if i % 2 == 0 else QColor("#fde047"),
+                        "life": random.uniform(0.55, 0.95)
+                    })
+        self.fireworks = [fw for fw in self.fireworks if fw.alive]
+        self.towns = [t for t in self.towns if t.alive]
+
         if not self.penguins:
             return
 
@@ -506,12 +659,43 @@ class NivalisOverlay(QWidget):
                 if abs(dx) <= 6.0:
                     pg.x = pg.target_x
                     pg.facing = 1 if pg.x < self.sw * 0.5 else -1
-                    pg.state = "heat"
+                    pg.state = "fireworks" if self.towns else "heat"
                 else:
                     step_dir = 1.0 if dx > 0 else -1.0
                     pg.facing = 1 if step_dir > 0 else -1
                     pg.x += step_dir * 165.0 * dt
 
+            # ЭТАП 1: Фейерверки стирают домики зайчиков
+            elif pg.state == "fireworks":
+                pg.waddle_phase += dt * 6.0
+                active_towns = [t for t in self.towns if t.alive]
+                if active_towns:
+                    pg.firework_cd -= dt
+                    if pg.firework_cd <= 0.0:
+                        pg.firework_cd = random.uniform(0.35, 0.75)
+                        town = random.choice(active_towns)
+                        if town.chambers:
+                            cid, ch = random.choice(
+                                list(town.chambers.items()))
+                            pg.facing = 1 if ch.x >= pg.x else -1
+                            self.fireworks.append(
+                                FireworkRocket(pg.x, pg.y - 28.0,
+                                               ch.x, ch.y, town, cid)
+                            )
+                        elif town.entrances:
+                            eid, pt = random.choice(
+                                list(town.entrances.items()))
+                            pg.facing = 1 if pt[0] >= pg.x else -1
+                            self.fireworks.append(
+                                FireworkRocket(pg.x, pg.y - 28.0,
+                                               pt[0], pt[1], town, eid)
+                            )
+                        else:
+                            town.alive = False
+                elif not self.fireworks:
+                    pg.state = "heat"
+
+            # ЭТАП 2: Обогреватели топят весь снег
             elif pg.state == "heat":
                 any_heating = True
                 pg.waddle_phase += dt * 4.0
@@ -528,6 +712,7 @@ class NivalisOverlay(QWidget):
                         "life": 0.55
                     })
 
+            # ЭТАП 3: Бумеранги срезают ели
             elif pg.state == "boomerang":
                 pg.heater_power = max(0.0, pg.heater_power - dt * 2.5)
                 standing = [t for t in self.trees if not t.is_falling]
@@ -576,7 +761,7 @@ class NivalisOverlay(QWidget):
                     pg.active = False
 
         if any_heating:
-            global_melt = 62.0 * dt
+            global_melt = 68.0 * dt
             for i in range(self.ground.width):
                 if self.ground.heights[i] > 0.0:
                     self.ground.heights[i] = max(
@@ -621,7 +806,7 @@ class NivalisOverlay(QWidget):
 
     def _update_fauna(self, dt: float):
         for r in self.fleeing_reindeers:
-            r.step(dt, self.sw, self.sh)
+            r.step(dt, self.sw, self.ground_y)
         self.fleeing_reindeers = [r for r in self.fleeing_reindeers if r.alive]
 
         ready = (
@@ -632,13 +817,13 @@ class NivalisOverlay(QWidget):
             if ready:
                 self.santa_cd -= dt
                 if self.santa_cd <= 0:
-                    self.santa = SantaSleigh(self.sw, self.sh)
+                    self.santa = SantaSleigh(self.sw, self.ground_y)
                     self.santa_cd = random.uniform(
                         SETTINGS.santa_min_interval,
                         SETTINGS.santa_min_interval + 15.0
                     )
         else:
-            impact = self.santa.step(dt, self.sw, self.sh)
+            impact = self.santa.step(dt, self.sw, self.ground_y)
             if self.santa.downed and random.random() < 0.35:
                 self.particles.append({
                     "x": self.santa.x + random.uniform(-20, 20),
@@ -655,7 +840,7 @@ class NivalisOverlay(QWidget):
                     self.falling_snow.append(
                         FallingSnowParticle(
                             x=cx + random.uniform(-35, 35),
-                            y=self.sh - 30,
+                            y=self.ground_y - 30,
                             mass=random.uniform(2.0, 6.0),
                             vx=random.uniform(-180, 180),
                             vy=random.uniform(-280, -60)
@@ -666,7 +851,7 @@ class NivalisOverlay(QWidget):
                 for _ in range(4):
                     self.presents.append({
                         "x": cx + random.uniform(-40, 40),
-                        "y": self.sh - 40,
+                        "y": self.ground_y - 40,
                         "vx": random.uniform(-120, 120),
                         "vy": random.uniform(-200, -80),
                         "rot": 0.0,
@@ -788,6 +973,9 @@ class NivalisOverlay(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
+        p.save()
+        p.setClipRect(QRectF(0, 0, self.sw, self.ground_y + 1))
+
         self._draw_puddle(p)
 
         for d in self.drops:
@@ -804,14 +992,27 @@ class NivalisOverlay(QWidget):
 
         self._render_ledge(p, self.ground)
 
+        for town in self.towns:
+            self._render_town(p, town)
+
         for t in self.trees:
             self._render_tree(p, t)
+
+        for bn in self.bunnies:
+            self._render_bunny(p, bn)
 
         for w in self.wolves:
             self._render_wolf(p, w)
 
         for pg in self.penguins:
             self._render_penguin(p, pg)
+
+        for fw in self.fireworks:
+            p.save()
+            p.setPen(QPen(QColor("#ffffff"), 1.5))
+            p.setBrush(fw.color)
+            p.drawEllipse(QPointF(fw.x, fw.y), 4.5, 4.5)
+            p.restore()
 
         for pr in self.presents:
             p.save()
@@ -846,22 +1047,72 @@ class NivalisOverlay(QWidget):
             p.setBrush(pt["col"])
             p.drawEllipse(QPointF(pt["x"], pt["y"]), pt["r"], pt["r"])
 
+        p.restore()
+
+        if self.penguins:
+            self._render_sos_beacon(p)
+
         self._render_tool_indicator(p)
         self._render_bottom_ui(p)
 
+    def _render_sos_beacon(self, p: QPainter):
+        p.save()
+        cx = self.sw * 0.5
+        pulse = (math.sin(time.time() * 11.0) + 1.0) * 0.5
+
+        glow_r = 120.0 + pulse * 95.0
+        glow = QRadialGradient(QPointF(cx, 18.0), glow_r)
+        glow.setColorAt(0.0, QColor(239, 68, 68, int(90 + pulse * 145)))
+        glow.setColorAt(0.45, QColor(220, 38, 38, int(35 + pulse * 75)))
+        glow.setColorAt(1.0, QColor(220, 38, 38, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(glow))
+        p.drawEllipse(QPointF(cx, 18.0), glow_r, glow_r * 0.75)
+
+        if pulse > 0.35:
+            beam_alpha = int((pulse - 0.35) * 165)
+            p.setBrush(QColor(248, 113, 113, beam_alpha))
+            left_beam = QPolygonF([
+                QPointF(cx - 10, 18),
+                QPointF(cx - 190, 68),
+                QPointF(cx - 150, 12)
+            ])
+            right_beam = QPolygonF([
+                QPointF(cx + 10, 18),
+                QPointF(cx + 190, 68),
+                QPointF(cx + 150, 12)
+            ])
+            p.drawPolygon(left_beam)
+            p.drawPolygon(right_beam)
+
+        p.setPen(QPen(QColor("#475569"), 1.5))
+        p.setBrush(QColor("#1e293b"))
+        p.drawRoundedRect(QRectF(cx - 32, -4, 64, 15), 4, 4)
+
+        bulb_col = QColor(255, int(55 + pulse * 85), int(55 + pulse * 85), 245)
+        p.setPen(QPen(QColor(254, 202, 202, 210), 1.5))
+        p.setBrush(bulb_col)
+        p.drawEllipse(QPointF(cx, 18.0), 15.0, 13.0)
+
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 240, 240, int(130 + pulse * 125)))
+        p.drawEllipse(QPointF(cx, 17.0), 6.5, 5.5)
+
+        p.restore()
+
     def _render_ledge(self, p: QPainter, ledge: SnowLedge):
-        if max(ledge.heights, default=0) < 0.6:
+        if max(ledge.heights, default=0) < 0.5:
             return
         poly = QPolygonF()
-        poly.append(QPointF(ledge.x1, ledge.y + 2))
-        step = 4 if ledge.kind == "ground" else 3
+        poly.append(QPointF(ledge.x1, ledge.y + 1))
+        step = 4 if ledge.kind == "ground" else 2
         for i in range(0, ledge.width, step):
             poly.append(QPointF(ledge.x1 + i, ledge.y - ledge.heights[i]))
         poly.append(QPointF(ledge.x2, ledge.y - ledge.heights[-1]))
-        poly.append(QPointF(ledge.x2, ledge.y + 2))
+        poly.append(QPointF(ledge.x2, ledge.y + 1))
 
         top_y = ledge.y - max(ledge.heights, default=10.0)
-        g = QLinearGradient(0, top_y, 0, ledge.y + 3)
+        g = QLinearGradient(0, top_y, 0, ledge.y + 2)
         g.setColorAt(0.0, QColor(253, 254, 255, 245))
         g.setColorAt(1.0, QColor(203, 222, 245, 235))
         p.setPen(QPen(QColor(255, 255, 255, 180), 1.0))
@@ -870,20 +1121,299 @@ class NivalisOverlay(QWidget):
 
     def _draw_puddle(self, p: QPainter):
         poly = QPolygonF()
-        poly.append(QPointF(0, self.sh))
+        poly.append(QPointF(0, self.ground_y))
         has_water = False
         for x in range(0, self.sw, 4):
             d = self.puddle.depths[x]
             if d > 0.2:
                 has_water = True
-            poly.append(QPointF(x, self.sh - d))
-        poly.append(QPointF(self.sw, self.sh - self.puddle.depths[-1]))
-        poly.append(QPointF(self.sw, self.sh))
+            poly.append(QPointF(x, self.ground_y - d))
+        poly.append(QPointF(self.sw, self.ground_y - self.puddle.depths[-1]))
+        poly.append(QPointF(self.sw, self.ground_y))
 
         if has_water:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(125, 211, 252, 95))
             p.drawPolygon(poly)
+
+    def _render_town(self, p: QPainter, town: SnowBurrowTown):
+        p.save()
+
+        # 1. Извилистые тоннели с плавными кривыми (quadTo)
+        for seg in town.segments:
+            pts = seg.points
+            if len(pts) < 2:
+                continue
+            path = QPainterPath()
+            path.moveTo(pts[0][0], pts[0][1])
+            for i in range(len(pts) - 1):
+                p_curr = pts[i]
+                p_next = pts[i + 1]
+                mid_x = (p_curr[0] + p_next[0]) * 0.5
+                mid_y = (p_curr[1] + p_next[1]) * 0.5
+                path.quadTo(p_curr[0], p_curr[1], mid_x, mid_y)
+            path.lineTo(pts[-1][0], pts[-1][1])
+
+            # Ледяная кайма
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(175, 206, 238, 195), 22.0, Qt.PenStyle.SolidLine,
+                     Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            p.drawPath(path)
+
+            # Внутренний темный проход
+            p.setPen(QPen(QColor(24, 33, 47, 245), 14.5, Qt.PenStyle.SolidLine,
+                     Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            p.drawPath(path)
+
+        # 2. Оболочка комнат
+        for ch in town.chambers.values():
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(175, 206, 238, 200))
+            p.drawEllipse(QPointF(ch.x, ch.y), ch.radius +
+                          3.5, ch.radius * 0.85 + 3.5)
+
+        # 3. Разнообразные комнаты для зайчиков
+        for ch in town.chambers.values():
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(24, 33, 47, 245))
+            p.drawEllipse(QPointF(ch.x, ch.y), ch.radius, ch.radius * 0.85)
+
+            if ch.radius < 10.0:
+                continue
+
+            # А) Главный зал (Hall) — теплый фонарик и столик
+            if ch.kind == "hall":
+                glow = QRadialGradient(
+                    QPointF(ch.x, ch.y - ch.radius * 0.35), ch.radius * 1.1)
+                glow.setColorAt(0.0, QColor(251, 191, 36, 115))
+                glow.setColorAt(1.0, QColor(251, 191, 36, 0))
+                p.setBrush(QBrush(glow))
+                p.drawEllipse(QPointF(ch.x, ch.y), ch.radius, ch.radius * 0.85)
+
+                p.setBrush(QColor("#fbbf24"))
+                p.drawEllipse(QPointF(ch.x, ch.y - ch.radius * 0.55), 2.8, 2.8)
+                p.setBrush(QColor("#78350f"))
+                p.drawRoundedRect(
+                    QRectF(ch.x - 7, ch.y + ch.radius * 0.2, 14, 3.5), 1.5, 1.5)
+                p.drawRect(QRectF(ch.x - 4, ch.y + ch.radius * 0.35, 2, 5))
+                p.drawRect(QRectF(ch.x + 2, ch.y + ch.radius * 0.35, 2, 5))
+
+            # Б) Спальня хозяина (Bedroom) — личная соломенная перина (1 место для сна)
+            elif ch.kind == "bedroom":
+                p.setBrush(QColor(217, 119, 6, 195))
+                p.drawChord(
+                    QRectF(ch.x - ch.radius * 0.78, ch.y + ch.radius *
+                           0.05, ch.radius * 1.56, ch.radius * 0.72),
+                    0, -180 * 16
+                )
+                p.setBrush(QColor("#f43f5e"))
+                p.drawEllipse(QPointF(ch.x - 5.0, ch.y +
+                              ch.radius * 0.38), 4.5, 2.5)
+
+            # В) Кладовая (Pantry) — полки с морковкой и ягодами
+            elif ch.kind == "pantry":
+                p.setBrush(QColor("#92400e"))
+                p.drawRect(QRectF(ch.x - ch.radius * 0.65, ch.y +
+                           ch.radius * 0.35, ch.radius * 1.3, 3.0))
+                for ox in (-5.0, 0.0, 4.0):
+                    p.setBrush(QColor("#f97316"))
+                    p.drawPolygon(QPolygonF([
+                        QPointF(ch.x + ox - 2, ch.y + 4),
+                        QPointF(ch.x + ox + 6, ch.y + 6),
+                        QPointF(ch.x + ox - 1, ch.y + 7)
+                    ]))
+                p.setBrush(QColor("#22c55e"))
+                p.drawEllipse(QPointF(ch.x - 6, ch.y + 4), 1.8, 1.8)
+                p.setBrush(QColor("#ef4444"))
+                p.drawEllipse(QPointF(ch.x + 6, ch.y - 1), 2.0, 2.0)
+                p.drawEllipse(QPointF(ch.x + 8.5, ch.y), 2.0, 2.0)
+
+            # Г) Игровая (Nursery) — бирюзовый коврик и мячики
+            elif ch.kind == "nursery":
+                p.setBrush(QColor(56, 189, 248, 160))
+                p.drawEllipse(QPointF(ch.x, ch.y + ch.radius *
+                              0.45), ch.radius * 0.65, 3.5)
+                p.setBrush(QColor("#ec4899"))
+                p.drawEllipse(
+                    QPointF(ch.x - 5, ch.y + ch.radius * 0.3), 3.2, 3.2)
+                p.setBrush(QColor("#facc15"))
+                p.drawEllipse(
+                    QPointF(ch.x + 4, ch.y + ch.radius * 0.35), 2.6, 2.6)
+
+        # 4. Аккуратные входы в снегу с деревянной аркой
+        for ent in town.entrances.values():
+            ex, ey = ent[0], ent[1]
+            p.save()
+            p.translate(ex, ey)
+
+            hood = QPainterPath()
+            hood.moveTo(-16, 4)
+            hood.quadTo(-15, -13, 0, -13)
+            hood.quadTo(15, -13, 16, 4)
+            hood.closeSubpath()
+            p.setPen(QPen(QColor(186, 214, 240, 230), 1.5))
+            p.setBrush(QColor(241, 248, 255, 245))
+            p.drawPath(hood)
+
+            p.setPen(QPen(QColor("#78350f"), 2.2))
+            p.setBrush(QColor(22, 30, 46, 248))
+            arch = QPainterPath()
+            arch.moveTo(-10, 5)
+            arch.quadTo(-10, -8, 0, -8)
+            arch.quadTo(10, -8, 10, 5)
+            arch.closeSubpath()
+            p.drawPath(arch)
+
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(215, 232, 248, 230))
+            p.drawRoundedRect(QRectF(-13, 3, 26, 4), 2, 2)
+            p.restore()
+
+        p.restore()
+
+    def _render_bunny(self, p: QPainter, bn: BunnyAgent):
+        p.save()
+
+        # Если спит в своей комнате
+        if bn.state == "in_chamber":
+            p.translate(bn.x, bn.y + 3.0)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor("#ffffff"))
+            p.drawEllipse(QPointF(0, 0), 8.0, 5.5)
+            p.setBrush(QColor("#f8fafc"))
+            p.drawEllipse(QPointF(4.0, -1.5), 4.8, 4.2)
+            p.setBrush(QColor("#fda4af"))
+            p.drawEllipse(QPointF(-1.0, -4.5), 5.0, 1.6)
+            p.restore()
+            return
+
+        stride_bob = abs(math.sin(bn.leg_phase)) * \
+            1.4 if bn.state in ("run", "flee", "exit", "tunnel_walk") else 0.0
+        p.translate(bn.x, bn.y - stride_bob)
+
+        if bn.is_underground:
+            p.scale(0.84, 0.84)
+
+        face = bn.look_dir if bn.state == "look_around" else bn.facing
+        if face == -1:
+            p.scale(-1, 1)
+
+        p.setPen(Qt.PenStyle.NoPen)
+
+        # СТОЙКА СТОЛБИКОМ
+        if bn.state == "look_around":
+            p.setBrush(QColor("#e2e8f0"))
+            p.drawEllipse(QPointF(-4.0, -2.0), 4.5, 2.5)
+            p.drawEllipse(QPointF(3.0, -2.0), 4.5, 2.5)
+
+            p.setBrush(QColor("#f8fafc"))
+            p.drawEllipse(QPointF(0.0, -12.0), 6.5, 11.5)
+            p.setBrush(QColor("#ffffff"))
+            p.drawEllipse(QPointF(1.5, -11.0), 4.5, 8.5)
+            p.drawEllipse(QPointF(-6.5, -6.0), 3.5, 3.5)
+
+            p.setBrush(QColor("#e2e8f0"))
+            p.drawEllipse(QPointF(4.0, -13.0), 2.5, 4.0)
+
+            p.setBrush(QColor("#f8fafc"))
+            p.drawEllipse(QPointF(1.5, -23.0), 5.5, 5.0)
+
+            p.save()
+            p.translate(1.0, -26.0)
+            p.rotate(bn.ear_twitch * 12.0)
+            p.setBrush(QColor("#f8fafc"))
+            p.drawEllipse(QPointF(-2.2, -6.5), 2.2, 7.5)
+            p.drawEllipse(QPointF(2.0, -6.0), 2.2, 7.0)
+            p.setBrush(QColor("#fda4af"))
+            p.drawEllipse(QPointF(-2.2, -6.0), 1.1, 5.0)
+            p.drawEllipse(QPointF(2.0, -5.5), 1.1, 4.8)
+            p.restore()
+
+            p.setBrush(QColor("#0f172a"))
+            p.drawEllipse(QPointF(4.5, -24.0), 1.4, 1.4)
+            p.setBrush(QColor("#fb7185"))
+            p.drawEllipse(QPointF(7.0, -22.5), 1.3, 1.1)
+
+        # ПРИНЮХИВАНИЕ И ОБЩЕНИЕ С ДРУГИМ ЗАЙЧИКОМ
+        elif bn.state in ("sniff", "chat", "underground_chat"):
+            chat_nod = math.sin(
+                time.time() * 14.0) * 1.5 if bn.state in ("chat", "underground_chat") else 0.0
+
+            p.setBrush(QColor("#ffffff"))
+            p.drawEllipse(QPointF(-9.0, -6.0), 3.5, 3.5)
+            p.setBrush(QColor("#e2e8f0"))
+            p.drawEllipse(QPointF(-4.0, -1.8), 4.5, 2.2)
+            p.drawEllipse(QPointF(5.0, -1.8), 3.5, 2.0)
+
+            p.setBrush(QColor("#f8fafc"))
+            p.drawEllipse(QPointF(-1.5, -6.5), 8.5, 6.0)
+            p.drawEllipse(QPointF(6.0, -9.5 + chat_nod), 5.5, 4.8)
+
+            p.setBrush(QColor("#f8fafc"))
+            p.drawEllipse(QPointF(3.5, -15.0 + chat_nod), 2.2, 6.5)
+            p.setBrush(QColor("#fda4af"))
+            p.drawEllipse(QPointF(3.5, -14.5 + chat_nod), 1.1, 4.2)
+
+            p.setBrush(QColor("#0f172a"))
+            p.drawEllipse(QPointF(7.8, -10.5 + chat_nod), 1.3, 1.3)
+            p.setBrush(QColor("#fb7185"))
+            p.drawEllipse(QPointF(11.0, -9.0 + chat_nod), 1.4, 1.1)
+
+            # Сердечко диалога над общающимися зайчиками
+            if bn.state in ("chat", "underground_chat"):
+                p.setBrush(QColor("#f43f5e"))
+                hy = -22.0 + math.sin(time.time() * 8.0) * 2.0
+                p.drawEllipse(QPointF(6.0, hy), 2.4, 2.4)
+                p.drawEllipse(QPointF(9.0, hy), 2.4, 2.4)
+                p.drawPolygon(QPolygonF([
+                    QPointF(4.0, hy + 1.0),
+                    QPointF(11.0, hy + 1.0),
+                    QPointF(7.5, hy + 5.5)
+                ]))
+
+        # БЕГ ВПЕРЕД БЕЗ ПОДСКОКОВ
+        else:
+            leg_swing = math.sin(
+                bn.leg_phase) * 5.0 if bn.state in ("run", "flee", "exit", "tunnel_walk") else 0.0
+            dig_bob = math.sin(bn.leg_phase) * \
+                2.0 if bn.state == "dig" else 0.0
+
+            p.setBrush(QColor("#ffffff"))
+            p.drawEllipse(QPointF(-10.0, -6.5), 3.8, 3.8)
+
+            p.setBrush(QColor("#cbd5e1"))
+            p.drawEllipse(QPointF(-5.0 - leg_swing * 0.6, -1.8), 4.2, 2.0)
+            p.drawEllipse(QPointF(4.5 - leg_swing * 0.5, -1.8), 3.4, 1.8)
+
+            p.setBrush(QColor("#f8fafc"))
+            p.drawEllipse(QPointF(-1.5, -7.2), 9.0, 6.0)
+            p.drawEllipse(QPointF(6.8, -11.5 + dig_bob), 5.8, 5.0)
+
+            p.setBrush(QColor("#e2e8f0"))
+            p.drawEllipse(QPointF(-3.5 + leg_swing * 0.7, -1.6), 4.4, 2.1)
+            p.drawEllipse(QPointF(5.5 + leg_swing * 0.8, -
+                          1.6 + dig_bob * 0.5), 3.6, 1.9)
+
+            ear_tilt = - \
+                28.0 if bn.state == "flee" else (
+                    -18.0 if bn.state == "dig" else -10.0)
+            p.save()
+            p.translate(5.0, -14.5 + dig_bob)
+            p.rotate(ear_tilt)
+            p.setBrush(QColor("#f8fafc"))
+            p.drawEllipse(QPointF(-1.5, -6.0), 2.3, 6.5)
+            p.drawEllipse(QPointF(2.0, -5.5), 2.3, 6.0)
+            p.setBrush(QColor("#fda4af"))
+            p.drawEllipse(QPointF(-1.5, -5.5), 1.1, 4.2)
+            p.drawEllipse(QPointF(2.0, -5.0), 1.1, 4.0)
+            p.restore()
+
+            p.setBrush(QColor("#0f172a"))
+            p.drawEllipse(QPointF(8.8, -12.5 + dig_bob), 1.3, 1.3)
+            p.setBrush(QColor("#fb7185"))
+            p.drawEllipse(QPointF(12.0, -11.0 + dig_bob), 1.4, 1.1)
+
+        p.restore()
 
     def _render_tree(self, p: QPainter, t: PineTree):
         p.save()
@@ -937,7 +1467,6 @@ class NivalisOverlay(QWidget):
 
         swing = math.sin(w.run_phase) * 9.0 if w.state != "pause" else 0.0
 
-        # Лапы волка в беге
         p.setPen(QPen(QColor("#334155"), 2.8,
                  Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         p.drawLine(QPointF(-11, -8), QPointF(-15 - swing, 0))
@@ -946,7 +1475,6 @@ class NivalisOverlay(QWidget):
         p.drawLine(QPointF(6, -8), QPointF(5 - swing * 0.7, 0))
 
         p.setPen(Qt.PenStyle.NoPen)
-        # Пушистый хвост
         tail = QPolygonF([
             QPointF(-13, -13),
             QPointF(-27, -10 + swing * 0.25),
@@ -956,13 +1484,11 @@ class NivalisOverlay(QWidget):
         p.setBrush(QColor("#475569"))
         p.drawPolygon(tail)
 
-        # Туловище и грудь
         p.setBrush(QColor("#64748b"))
         p.drawRoundedRect(QRectF(-15, -16, 28, 10), 4, 4)
         p.setBrush(QColor("#94a3b8"))
         p.drawRoundedRect(QRectF(-10, -11, 20, 4), 2, 2)
 
-        # Шея, голова и морда
         head = QPolygonF([
             QPointF(9, -15),
             QPointF(15, -23),
@@ -973,7 +1499,6 @@ class NivalisOverlay(QWidget):
         p.setBrush(QColor("#475569"))
         p.drawPolygon(head)
 
-        # Острые уши
         ear1 = QPolygonF(
             [QPointF(13, -21), QPointF(15, -28), QPointF(18, -21)])
         ear2 = QPolygonF(
@@ -983,7 +1508,6 @@ class NivalisOverlay(QWidget):
         p.setBrush(QColor("#475569"))
         p.drawPolygon(ear1)
 
-        # Янтарный глаз и черный нос
         p.setBrush(QColor("#f59e0b"))
         p.drawEllipse(QPointF(18.5, -19.5), 1.5, 1.5)
         p.setBrush(QColor("#0f172a"))
@@ -1054,8 +1578,14 @@ class NivalisOverlay(QWidget):
         p.setBrush(QColor("#fde047"))
         p.drawEllipse(QPointF(-2, -47), 2.5, 2.5)
 
-        p.setBrush(QColor("#1e293b"))
-        p.drawEllipse(QPointF(-3, -18), 4.2, 10.5)
+        if pg.state == "fireworks":
+            p.setBrush(QColor("#dc2626"))
+            p.drawRoundedRect(QRectF(4, -26, 14, 5), 2, 2)
+            p.setBrush(QColor("#fde047"))
+            p.drawRect(QRectF(15, -26, 3, 5))
+        else:
+            p.setBrush(QColor("#1e293b"))
+            p.drawEllipse(QPointF(-3, -18), 4.2, 10.5)
         p.restore()
 
         if pg.boomerang is not None:
@@ -1149,7 +1679,6 @@ class NivalisOverlay(QWidget):
         if s.direction == -1:
             p.scale(-1, 1)
 
-        # Вожжи и олени рисуются вместе с санями только пока сани не подбиты
         if not s.downed:
             reins = QPainterPath()
             reins.moveTo(-14, -15)
