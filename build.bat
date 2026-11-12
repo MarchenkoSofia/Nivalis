@@ -1,5 +1,5 @@
 @echo off
-rem Сборка Nivalis.exe. Готовит окружение в build\venv и вызывает packaging\windows\build-exe.bat.
+rem Сборка dist\Nivalis-<версия>-x86_64.exe. Готовит окружение в build\venv и вызывает packaging\windows\build-exe.bat.
 setlocal
 chcp 65001 >nul
 set "ROOT=%~dp0"

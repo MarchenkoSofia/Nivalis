@@ -89,7 +89,7 @@ chmod +x Nivalis-*-x86_64.AppImage
 
 | Платформа | Команда | Результат |
 |---|---|---|
-| Windows | `build.bat` | `dist\Nivalis.exe` |
+| Windows | `build.bat` | `dist\Nivalis-<версия>-x86_64.exe` |
 | Linux | `./build.sh` | `dist/Nivalis-<версия>-x86_64.AppImage` |
 
 Скрипты в корне создают окружение для сборки в `build/venv` и вызывают полные скрипты из `packaging/` (`packaging/windows/build-exe.bat`, `packaging/linux/build-appimage.sh`). Эти же скрипты использует сборка релизов на GitHub, которая запускается при отправке тега `v*`.

@@ -10,7 +10,7 @@ ARCH="${ARCH:-$(uname -m)}"
 BUILD="$ROOT/build/appimage"
 APPDIR="$BUILD/AppDir"
 TOOLS="$BUILD/tools"
-VERSION="${VERSION:-$("$PYTHON" -c 'import sys; sys.path.insert(0, sys.argv[1]); from nivalis.config import APP_VERSION; print(APP_VERSION)' "$ROOT")}"
+VERSION="${VERSION:-$("$PYTHON" "$ROOT/packaging/version.py")}"
 
 cd "$ROOT"
 rm -rf "$APPDIR" "$BUILD/pyinstaller"
