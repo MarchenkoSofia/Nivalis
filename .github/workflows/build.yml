@@ -28,15 +28,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
-      - name: Build standalone executable with PyInstaller
+      - name: Build Nivalis exe
+        shell: pwsh
         run: |
-          pyinstaller --noconsole --onefile --clean --name "Nivalis" main.py
+          $env:VERSION = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME -replace "^v", "" } else { git rev-parse --short HEAD }
+          cmd /c packaging\windows\build-exe.bat
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: nivalis-windows
-          path: dist/Nivalis.exe
+          path: dist/*.exe
           if-no-files-found: error
 
   build-linux-appimage:
@@ -96,7 +99,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/Nivalis.exe
+            artifacts/*.exe
             artifacts/*.AppImage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
