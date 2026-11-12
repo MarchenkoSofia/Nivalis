@@ -58,7 +58,7 @@ chmod +x Nivalis-*-x86_64.AppImage
 ./Nivalis-*-x86_64.AppImage
 ```
 
-Если AppImage не стартует из-за FUSE, поставьте `libfuse2` (Debian/Ubuntu: `sudo apt install libfuse2`, Fedora: `sudo dnf install fuse-libs`, Arch: `sudo pacman -S fuse2`) или запустите с флагом `--appimage-extract-and-run`.
+Если AppImage не стартует из-за FUSE, поставьте FUSE 3 (Debian/Ubuntu: `sudo apt install fuse3`, Fedora: `sudo dnf install fuse3`, Arch: `sudo pacman -S fuse3`) или запустите с флагом `--appimage-extract-and-run`.
 
 **Из исходников:** нужен Python 3.10+. Скрипт сам создаст `.venv` и поставит зависимости:
 
