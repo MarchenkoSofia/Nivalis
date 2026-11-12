@@ -1,23 +1,31 @@
 from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
-from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor
+from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen
 from PyQt6.QtCore import Qt
 
 
-def generate_tray_icon() -> QIcon:
-    px = QPixmap(32, 32)
+def generate_icon_pixmap(size: int = 32) -> QPixmap:
+    px = QPixmap(size, size)
     px.fill(Qt.GlobalColor.transparent)
     p = QPainter(px)
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.scale(size / 32.0, size / 32.0)
     p.setBrush(QColor("#38bdf8"))
     p.setPen(Qt.PenStyle.NoPen)
     p.drawEllipse(2, 2, 28, 28)
-    p.setPen(QColor("#ffffff"))
+    p.setPen(QPen(QColor("#ffffff"), 1.0))
     p.drawLine(16, 6, 16, 26)
     p.drawLine(6, 16, 26, 16)
     p.drawLine(9, 9, 23, 23)
     p.drawLine(9, 23, 23, 9)
     p.end()
-    return QIcon(px)
+    return px
+
+
+def generate_tray_icon() -> QIcon:
+    icon = QIcon()
+    for size in (16, 22, 24, 32, 48, 64):
+        icon.addPixmap(generate_icon_pixmap(size))
+    return icon
 
 
 class TrayManager:

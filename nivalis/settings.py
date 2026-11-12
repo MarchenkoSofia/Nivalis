@@ -25,7 +25,7 @@ class SettingsDialog(QWidget):
             QWidget {
                 background-color: #0f172a;
                 color: #f1f5f9;
-                font-family: 'Segoe UI';
+                font-family: 'Segoe UI', 'Noto Sans', 'DejaVu Sans', sans-serif;
                 font-size: 13px;
             }
             QGroupBox {

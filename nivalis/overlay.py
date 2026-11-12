@@ -11,8 +11,9 @@ from .config import (
     PHYSICS_FPS, WIN_SCAN_INTERVAL_MS, ICON_SCAN_TICKS,
     WIND_FORCE_SCALE, GRAVITY, SETTINGS
 )
-from .platform_win import (
-    fetch_visible_windows, fetch_desktop_icons, set_window_pass_through
+from .platform import (
+    fetch_visible_windows, fetch_desktop_icons, set_window_pass_through,
+    prepare_overlay_window
 )
 from .weather import WeatherEngine, WeatherType
 from .physics import SnowLedge, FallingSnowParticle, WaterDrop, PuddleMap
@@ -31,10 +32,13 @@ class NivalisOverlay(QWidget):
         geom = screen.geometry()
         avail = screen.availableGeometry()
 
+        # Начало координат основного монитора (на Linux он может быть не в 0,0).
+        self.ox = geom.x()
+        self.oy = geom.y()
         self.sw = geom.width()
         self.sh = geom.height()
 
-        avail_bottom = avail.y() + avail.height()
+        avail_bottom = avail.y() - self.oy + avail.height()
         if avail_bottom >= self.sh - 4:
             self.ground_y = self.sh - 48
         else:
@@ -47,7 +51,7 @@ class NivalisOverlay(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self.setGeometry(0, 0, self.sw, self.sh)
+        self.setGeometry(self.ox, self.oy, self.sw, self.sh)
         self.setMouseTracking(True)
 
         self.weather = WeatherEngine()
@@ -58,6 +62,7 @@ class NivalisOverlay(QWidget):
         self.window_ledges: dict[int, SnowLedge] = {}
         self.icon_ledges: list[SnowLedge] = []
         self.visible_win_rects: list[tuple[int, int, int, int]] = []
+        self.win_rect_by_id: dict[int, tuple[int, int, int, int]] = {}
         self.scan_tick_counter = 0
 
         self.ambient_flakes: list[dict] = []
@@ -112,9 +117,11 @@ class NivalisOverlay(QWidget):
         for _ in range(160):
             self._spawn_ambient_flake(scatter_y=True)
 
+        self._pass_through: bool | None = None
         self.show()
         self.hwnd = int(self.winId())
-        set_window_pass_through(self.hwnd, True)
+        prepare_overlay_window(self)
+        self._set_pass_through(True)
 
         self.tray = TrayManager(self)
 
@@ -134,9 +141,16 @@ class NivalisOverlay(QWidget):
         self.settings_dlg.raise_()
         self.settings_dlg.activateWindow()
 
+    def _set_pass_through(self, transparent: bool):
+        if self._pass_through is transparent:
+            return
+        self._pass_through = transparent
+        set_window_pass_through(self, transparent)
+
     def set_active_tool(self, tool_id: str | None):
         self.active_tool = tool_id
-        set_window_pass_through(self.hwnd, tool_id is None)
+        self.mouse_pressed = False
+        self._set_pass_through(tool_id is None)
 
     def force_spawn_santa(self):
         if self.santa is None:
@@ -195,8 +209,9 @@ class NivalisOverlay(QWidget):
 
             self.icon_ledges = updated_icons
 
-        wins = fetch_visible_windows(self.hwnd, self.sw, self.sh)
+        wins = fetch_visible_windows(self.hwnd, self.sw, self.sh, (self.ox, self.oy))
         self.visible_win_rects = [r for _, r in wins]
+        self.win_rect_by_id = dict(wins)
         active_ids = set()
 
         for h, (l, t, r, b) in wins:
@@ -290,7 +305,7 @@ class NivalisOverlay(QWidget):
         self.last_tick = now
 
         pos = QCursor.pos()
-        gx, gy = float(pos.x()), float(pos.y())
+        gx, gy = float(pos.x() - self.ox), float(pos.y() - self.oy)
         self.mouse_vel = QPointF((gx - self.last_pos.x()) / max(0.001, dt),
                                  (gy - self.last_pos.y()) / max(0.001, dt))
 
@@ -303,7 +318,7 @@ class NivalisOverlay(QWidget):
             over_santa = (
                 self.santa and not self.santa.downed and self.santa.bounding_box().contains(gx, gy)
             )
-            set_window_pass_through(self.hwnd, not (over_santa or over_ui))
+            self._set_pass_through(not (over_santa or over_ui))
 
         if self.santa and not self.santa.downed:
             spd = math.hypot(self.mouse_vel.x(), self.mouse_vel.y())
@@ -325,6 +340,8 @@ class NivalisOverlay(QWidget):
 
         w_acc = self.weather.wind * WIND_FORCE_SCALE
         win_ledges = list(self.window_ledges.values())
+        win_ledge_rects = [self.win_rect_by_id.get(h)
+                           for h in self.window_ledges.keys()]
 
         for f in self.ambient_flakes:
             old_y = f["y"]
@@ -343,12 +360,11 @@ class NivalisOverlay(QWidget):
 
             if f["depth"] > 0.5:
                 for idx, wl in enumerate(win_ledges):
-                    if wl.x1 <= fx <= wl.x2:
-                        lx = int(fx) - wl.x1
+                    if wl.x1 <= fx < wl.x2:
+                        lx = math.floor(fx) - wl.x1
                         sy = wl.y - wl.heights[lx]
                         if old_y <= sy <= fy:
-                            w_rc = self.visible_win_rects[idx] if idx < len(
-                                self.visible_win_rects) else None
+                            w_rc = win_ledge_rects[idx]
                             if not self._point_occluded(fx, wl.y - 2, exclude_rect=w_rc):
                                 if not self.weather.is_thawing and not penguins_heating:
                                     wl.deposit(fx, 0.9, rad=7)
@@ -357,8 +373,8 @@ class NivalisOverlay(QWidget):
 
             if not stuck and f["depth"] > 0.65:
                 for il in self.icon_ledges:
-                    if il.x1 <= fx <= il.x2:
-                        lx = int(fx) - il.x1
+                    if il.x1 <= fx < il.x2:
+                        lx = math.floor(fx) - il.x1
                         sy = il.y - il.heights[lx]
                         if old_y <= sy <= fy:
                             if not self._point_occluded(fx, il.y):
@@ -402,8 +418,8 @@ class NivalisOverlay(QWidget):
                 continue
 
             for wl in win_ledges:
-                if wl.x1 <= p.x <= wl.x2 and old_y < wl.y - 2:
-                    lx = int(p.x) - wl.x1
+                if wl.x1 <= p.x < wl.x2 and old_y < wl.y - 2:
+                    lx = math.floor(p.x) - wl.x1
                     sy = wl.y - wl.heights[lx]
                     if old_y <= sy <= p.y:
                         if not penguins_heating:
@@ -414,8 +430,8 @@ class NivalisOverlay(QWidget):
                 continue
 
             for il in self.icon_ledges:
-                if il.x1 <= p.x <= il.x2 and old_y < il.y - 2:
-                    lx = int(p.x) - il.x1
+                if il.x1 <= p.x < il.x2 and old_y < il.y - 2:
+                    lx = math.floor(p.x) - il.x1
                     sy = il.y - il.heights[lx]
                     if old_y <= sy <= p.y:
                         if not penguins_heating and not self._point_occluded(p.x, il.y):
@@ -987,8 +1003,27 @@ class NivalisOverlay(QWidget):
             if not self._point_occluded((il.x1 + il.x2) * 0.5, il.y):
                 self._render_ledge(p, il)
 
-        for wl in self.window_ledges.values():
-            self._render_ledge(p, wl)
+        z_order = list(self.win_rect_by_id.keys())
+        for h, wl in self.window_ledges.items():
+            above = z_order[:z_order.index(h)] if h in self.win_rect_by_id else []
+            hole = QPainterPath()
+            hole.setFillRule(Qt.FillRule.WindingFill)
+            top = wl.y - max(wl.heights, default=0.0) - 2
+            for oh in above:
+                l, t, r, b = self.win_rect_by_id[oh]
+                if r > wl.x1 and l < wl.x2 and t <= wl.y + 1 and b >= top:
+                    hole.addRect(QRectF(l, t, r - l, b - t))
+            if hole.isEmpty():
+                self._render_ledge(p, wl)
+            else:
+                # Не рисуем шапку окна поверх окон, которые его перекрывают.
+                p.save()
+                full = QPainterPath()
+                full.addRect(QRectF(0, 0, self.sw, self.ground_y + 1))
+                p.setClipPath(full.subtracted(hole),
+                              Qt.ClipOperation.IntersectClip)
+                self._render_ledge(p, wl)
+                p.restore()
 
         self._render_ledge(p, self.ground)
 
