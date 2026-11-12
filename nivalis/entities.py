@@ -389,6 +389,23 @@ class BunnyAgent:
             self._leave_chamber()
             self.state = "exit"
 
+        # Городок растаял/взорван, пока зайчик сидел в камере: выбираемся наверх,
+        # иначе он навсегда застревает под землёй и занимает слот популяции.
+        if self.state in ("in_chamber", "underground_chat"):
+            town = self.current_town
+            chamber_gone = (
+                self.target_chamber is not None and town is not None and
+                self.target_chamber.id not in town.chambers
+            )
+            if town is None or not town.alive or chamber_gone:
+                self._leave_chamber()
+                self.current_town = None
+                self.current_node_id = None
+                self.tunnel_path = []
+                self.chat_partner = None
+                self.state = "look_around"
+                self.state_timer = random.uniform(0.8, 1.5)
+
         nearest_wolf = min(wolves, key=lambda w: abs(
             w.x - self.x)) if wolves else None
         wolf_dist = abs(nearest_wolf.x - self.x) if nearest_wolf else 99999.0
@@ -564,7 +581,12 @@ class BunnyAgent:
         elif self.state == "dig":
             self.leg_phase += dt * 24.0
             if not self.digging_town or not self.digging_town.alive:
-                self.state = "run"
+                self.digging_town = None
+                self.digging_chamber = None
+                self.active_segment = None
+                self.current_town = None
+                self.current_node_id = None
+                self._start_running(self.facing, screen_w)
                 return False, None
 
             # Фаза расширения круглой комнаты
@@ -575,7 +597,7 @@ class BunnyAgent:
                 self.y = ch.y
                 if ch.radius >= ch.max_radius:
                     self.target_chamber = ch
-                    ch.occupants = 1
+                    ch.occupants += 1
                     self.current_node_id = ch.id
                     self.digging_chamber = None
                     self.active_segment = None
@@ -631,7 +653,7 @@ class BunnyAgent:
         elif self.state == "flee":
             self.leg_phase += dt * 24.0
             wolf_x = nearest_wolf.x if nearest_wolf else None
-            away_dir = -1 if (wolf_x and wolf_x > self.x) else 1
+            away_dir = -1 if (wolf_x is not None and wolf_x > self.x) else 1
 
             # Ищем ближайший безопасный вход в любом из городков
             best_town, best_eid, best_ent_pt, best_d = None, None, None, 99999.0

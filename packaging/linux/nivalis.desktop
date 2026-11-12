@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Nivalis
+GenericName=Desktop Snowfall
+GenericName[ru]=Снегопад на рабочем столе
+Comment=Interactive snowfall overlay for the desktop
+Comment[ru]=Интерактивный снегопад: снег на окнах, сугробы, ёлки и пингвины
+Exec=nivalis
+Icon=nivalis
+Terminal=false
+Categories=Utility;Amusement;
+StartupNotify=false

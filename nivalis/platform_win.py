@@ -96,7 +96,16 @@ def fetch_desktop_icons(screen_w: int, screen_h: int) -> list[tuple[int, int, in
             pass
     return rects
 
-def fetch_visible_windows(own_hwnd: int, screen_w: int, screen_h: int) -> list[tuple[int, tuple[int, int, int, int]]]:
+def check_environment() -> str | None:
+    return None
+
+
+def prepare_overlay_window(widget):
+    pass
+
+
+def fetch_visible_windows(own_hwnd: int, screen_w: int, screen_h: int,
+                          origin: tuple[int, int] = (0, 0)) -> list[tuple[int, tuple[int, int, int, int]]]:
     wins = []
     ignored = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "NotifyIconOverflowWindow"}
     
@@ -127,7 +136,8 @@ def fetch_visible_windows(own_hwnd: int, screen_w: int, screen_h: int) -> list[t
     win32gui.EnumWindows(_cb, None)
     return wins
 
-def set_window_pass_through(hwnd: int, transparent: bool):
+def set_window_pass_through(widget, transparent: bool):
+    hwnd = int(widget.winId())
     ex = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
     if transparent:
         ex |= win32con.WS_EX_TRANSPARENT | win32con.WS_EX_LAYERED
